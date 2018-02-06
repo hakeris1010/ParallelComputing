@@ -92,7 +92,7 @@ public:
      *  the current message on a pointer.
      */ 
     bool pollMessage( MessType& mess ){
-        if( dispatcherClosed ){
+        if( dispatcherClosed && !itemCount ){
             vlog( 1, verb, " [pollMsg]: Dispatcher is Closed! No more messages to expect!\n" );
             return false;
         }
@@ -143,23 +143,23 @@ public:
 
             // If this thread has already consumed the current message, wait until 
             // there are no more threads that haven't consumed the message yet.
-            //
-            // - The lambda passed indicates the condition of wait end:
-            //   while (!pred()) wait(lck);
             //   
             // - Condition variable unlocks the mutex, allowing other threads to move 
             //   freely, and waits until notification by calling notify() method.
             //
-            cond.wait( lock, [&](){ 
-                // Wait Stop Condition.
-                return threadsNotReceived.empty() && !dispatcherClosed;
-            } );
+            while( !threadsNotReceived.empty() && !dispatcherClosed ){
+                cond.wait( lock );
+
+                vlog( 4, verb, " [WAIT PollMsg]: Notified! Checking vals: " \
+                      "tnr.empty(): %d, dispatcherClosed: %d\n", threadsNotReceived.empty(),
+                      dispatcherClosed );
+            }
             // At this point, all threads have received the current message.
             // After waiting, the mutex lock is automatically Re-Acquired.
             // We assume many receivers were waiting, so them all now are gonna procceed to the
             // next message.
             
-            vlog( 2, verb," [pollMsg]: Thread %s is OUT OF WAIT! Proceeding to next msg.\n",
+            vlog( 3, verb," [pollMsg]: Thread %s is OUT OF WAIT! Proceeding to next msg.\n",
                   toString(threadID).c_str() );
         }
 
