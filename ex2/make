@@ -1,5 +1,5 @@
 #!/bin/bash
 g++ --std=c++14 -c main.cpp -o main.o
-g++ -o bin/ex1 main.o -lpthread
+g++ -o bin/ex2 main.o -lpthread
 
 
