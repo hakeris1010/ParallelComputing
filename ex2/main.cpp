@@ -14,6 +14,8 @@ private:
     size_t writePos = 0;
     size_t itemCount = 0;
 
+    volatile bool dispatcherClosed = false;
+
     std::mutex mut;
     std::condition_variable cond;
 
@@ -21,6 +23,9 @@ private:
     std::vector< std::thread::id > threadsNotReceived;
 
 protected:
+    /*! Dispatches new message - pushes it to the ring buffer queue.
+     *  - Notifies all waiters to check whether they can accept the message.
+     */ 
     void dispatchMessage( MessType&& mess ){
         // Lock the critical section - adding a new message to queue.
         {
@@ -36,6 +41,10 @@ protected:
         }
         // Wake up waiting threads to procceed with message consuming.
         cond.notify_all(); 
+    }
+
+    void markDispatcherAsClosed(){
+        dispatcherClosed = true;
     }
 
 public:
@@ -56,16 +65,23 @@ public:
      *  the current message on a pointer.
      */ 
     bool pollMessage( MessType& mess ){
+        if( dispatcherClosed )
+            return false;
+
         std::unique_lock< std::mutex > lock( mut );
         auto threadID = std::this_thread::get_id();
 
-        // If this thread hasn't yet received the current message, get it, and return.
-        if( std::find( threadsNotReceived.begin(), threadsNotReceived.end(), threadID )
-            != threadsNotReceived.end() ){
+        // If this thread hasn't yet received the current message
+        // (it's ID is still in "threads which haven't received current message"), 
+        // get the message, and return.
+        if( threadsNotReceived.find( threadID ) != threadsNotReceived.end() && itemCount ) {
+            threadsNotReceived.erase( threadID );
+
             if( readPos >= ringBuffer.size() )
                 readPos = 0;
+
             // Get message, and return it.
-            mess = ringBuffer[ readPos ];
+            mess = ringBuffer[ readPos ]; 
             return true;
         }
 
@@ -79,9 +95,39 @@ public:
         //   freely, and waits until notification by calling notify() method.
         //
         cond.wait( lock, [&](){ 
+            // Wait Stop Condition.
             return threadsNotReceived.empty() && itemCount > 0;
         } );
+        // After waiting, automatically Re-Acquire the mutex lock.
+
+        // At this point, all threads have received the current message.
+        if( readPos >= ringBuffer.size() )
+            readPos = 0;
+
+        // Get message, and update stats.
+        mess = ringBuffer[ readPos ]; 
+
+        readPos++;
+        itemCount--;
+
+        return true; 
     }
+
+    /*! "Subscribe" to message service. 
+     *  - Adds the calling thread's ID to the Receiver Threads lists.
+     */ 
+    bool subscribe(){
+        std::unique_lock< std::mutex > lock( mut );
+        
+    }
+
+    /*! "UnSubscribe" from the message service. 
+     *  - Removes the calling thread's ID from the Receiver Threads lists.
+     */ 
+    bool subscribe(){
+        std::unique_lock< std::mutex > lock( mut );
+        
+    } 
 };
 
 /*template<typename MessType>
