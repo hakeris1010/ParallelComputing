@@ -1,3 +1,9 @@
+/*! Program demonstrates the problem of Race Condition.
+ *  - To demostrate it, we print data to a string: 
+ *    print a line "Hello World !" in 4 stages.
+ *  - Synchronized and Non-Synchronized execution modes are available.
+ */
+
 #include <iostream>
 #include <thread>
 #include <mutex>
