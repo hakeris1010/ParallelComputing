@@ -1,4 +1,4 @@
-/*! Program demonstrates the problem of Race Condition.
+/*! Program demonstrates the problem of Critical Section.
  *  - To demostrate it, we print data to a string: 
  *    print a line "Hello World !" in 4 stages.
  *  - Synchronized and Non-Synchronized execution modes are available.
@@ -20,6 +20,9 @@ struct MutexedString{
     std::string str;
 };
 
+/*! Critical Section occurs in this function, which prints
+ *  "Hello World!" in 4 stages.  
+ */
 void printHelloWorld( std::shared_ptr<MutexedString> mts ){
     mts->str.append("Hello ");
     std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
