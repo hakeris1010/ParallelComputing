@@ -4,7 +4,7 @@
 #include <condition_variable>
 #include <string>
 #include <vector>
-#include <algorithm>
+#include <set>
 
 template<class MessType>
 class MessageService{
@@ -19,8 +19,8 @@ private:
     std::mutex mut;
     std::condition_variable cond;
 
-    std::vector< std::thread::id > receiverThreadIDs;
-    std::vector< std::thread::id > threadsNotReceived;
+    std::set< std::thread::id > receiverThreadIDs;
+    std::set< std::thread::id > threadsNotReceived;
 
 protected:
     /*! Dispatches new message - pushes it to the ring buffer queue.
@@ -68,6 +68,8 @@ public:
         if( dispatcherClosed )
             return false;
 
+        // Lock scope.
+        {
         std::unique_lock< std::mutex > lock( mut );
         auto threadID = std::this_thread::get_id();
 
@@ -98,19 +100,20 @@ public:
             // Wait Stop Condition.
             return threadsNotReceived.empty() && itemCount > 0;
         } );
-        // After waiting, automatically Re-Acquire the mutex lock.
-
         // At this point, all threads have received the current message.
-        if( readPos >= ringBuffer.size() )
-            readPos = 0;
+        // After waiting, the mutex lock is automatically Re-Acquired.
+        // We assume many receivers were waiting, so them all now are gonna procceed to the
+        // next message.
 
-        // Get message, and update stats.
-        mess = ringBuffer[ readPos ]; 
-
+        // ReSet the list of threads which haven't still received the message.
+        threadsNotReceived = receiverThreadIDs;        
+         
         readPos++;
-        itemCount--;
+        itemCount--; 
+        }
 
-        return true; 
+        // Get the next message.
+        return pollMessage( mess );
     }
 
     /*! "Subscribe" to message service. 
@@ -118,15 +121,21 @@ public:
      */ 
     bool subscribe(){
         std::unique_lock< std::mutex > lock( mut );
+        auto threadID = std::this_thread::get_id();
         
+        receiverThreadIDs.insert( threadID );
+        threadsNotReceived.insert( threadID );
     }
 
     /*! "UnSubscribe" from the message service. 
      *  - Removes the calling thread's ID from the Receiver Threads lists.
      */ 
-    bool subscribe(){
+    bool unSubscribe(){
         std::unique_lock< std::mutex > lock( mut );
-        
+        auto threadID = std::this_thread::get_id();
+
+        receiverThreadIDs.erase( threadID );
+        threadsNotReceived.erase( threadID );
     } 
 };
 
