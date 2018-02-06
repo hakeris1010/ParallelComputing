@@ -23,6 +23,8 @@ private:
     std::set< std::thread::id > threadsNotReceived;
 
 protected:
+    const static size_t DEFAULT_BUFFSIZE = 256;
+
     /*! Dispatches new message - pushes it to the ring buffer queue.
      *  - Notifies all waiters to check whether they can accept the message.
      */ 
@@ -43,23 +45,6 @@ protected:
         cond.notify_all(); 
     }
 
-    void markDispatcherAsClosed(){
-        dispatcherClosed = true;
-    }
-
-public:
-    MessageService( size_t buffSize, std::initializer_list<MessType>&& initialMess = {} )
-        : ringBuffer( initialMess ), writePos( initialMess.size() ), 
-          itemCount( initialMess.size() ) 
-    {
-        if( ringBuffer.size() < buffSize ){
-            ringBuffer.reserve( buffSize );
-            for( size_t i = 0; i < (buffSize - ringBuffer.size()); i++ ){
-                ringBuffer.push_back( MessType() );
-            }
-        }
-    }
-
     /*! Critical sections occur in this function.
      *  We use Condition Variable to wait until all callers have received
      *  the current message on a pointer.
@@ -70,46 +55,46 @@ public:
 
         // Lock scope.
         {
-        std::unique_lock< std::mutex > lock( mut );
-        auto threadID = std::this_thread::get_id();
+            std::unique_lock< std::mutex > lock( mut );
+            auto threadID = std::this_thread::get_id();
 
-        // If this thread hasn't yet received the current message
-        // (it's ID is still in "threads which haven't received current message"), 
-        // get the message, and return.
-        if( threadsNotReceived.find( threadID ) != threadsNotReceived.end() && itemCount ) {
-            threadsNotReceived.erase( threadID );
+            // If this thread hasn't yet received the current message
+            // (it's ID is still in "threads which haven't received current message"), 
+            // get the message, and return.
+            if( threadsNotReceived.find( threadID ) != threadsNotReceived.end() && itemCount ) {
+                threadsNotReceived.erase( threadID );
 
-            if( readPos >= ringBuffer.size() )
-                readPos = 0;
+                if( readPos >= ringBuffer.size() )
+                    readPos = 0;
 
-            // Get message, and return it.
-            mess = ringBuffer[ readPos ]; 
-            return true;
-        }
+                // Get message, and return it.
+                mess = ringBuffer[ readPos ]; 
+                return true;
+            }
 
-        // If this thread has already consumed the current message, wait until 
-        // there are no more threads that haven't consumed the message yet.
-        //
-        // - The lambda passed indicates the condition of wait end:
-        //   while (!pred()) wait(lck);
-        //   
-        // - Condition variable unlocks the mutex, allowing other threads to move 
-        //   freely, and waits until notification by calling notify() method.
-        //
-        cond.wait( lock, [&](){ 
-            // Wait Stop Condition.
-            return threadsNotReceived.empty() && itemCount > 0;
-        } );
-        // At this point, all threads have received the current message.
-        // After waiting, the mutex lock is automatically Re-Acquired.
-        // We assume many receivers were waiting, so them all now are gonna procceed to the
-        // next message.
+            // If this thread has already consumed the current message, wait until 
+            // there are no more threads that haven't consumed the message yet.
+            //
+            // - The lambda passed indicates the condition of wait end:
+            //   while (!pred()) wait(lck);
+            //   
+            // - Condition variable unlocks the mutex, allowing other threads to move 
+            //   freely, and waits until notification by calling notify() method.
+            //
+            cond.wait( lock, [&](){ 
+                // Wait Stop Condition.
+                return threadsNotReceived.empty() && itemCount > 0;
+            } );
+            // At this point, all threads have received the current message.
+            // After waiting, the mutex lock is automatically Re-Acquired.
+            // We assume many receivers were waiting, so them all now are gonna procceed to the
+            // next message.
 
-        // ReSet the list of threads which haven't still received the message.
-        threadsNotReceived = receiverThreadIDs;        
-         
-        readPos++;
-        itemCount--; 
+            // ReSet the list of threads which haven't still received the message.
+            threadsNotReceived = receiverThreadIDs;        
+             
+            readPos++;
+            itemCount--; 
         }
 
         // Get the next message.
@@ -136,8 +121,28 @@ public:
 
         receiverThreadIDs.erase( threadID );
         threadsNotReceived.erase( threadID );
-    } 
+    }
+
+    void markDispatcherAsClosed(){
+        dispatcherClosed = true;
+    }
+
+public:
+    MessageService( size_t buffSize = DEFAULT_BUFFSIZE, 
+                    std::initializer_list<MessType>&& initialMess = {} )
+    : ringBuffer( initialMess ), writePos( initialMess.size() ), 
+      itemCount( initialMess.size() ) 
+    {
+        if( ringBuffer.size() < buffSize ){
+            ringBuffer.reserve( buffSize );
+            for( size_t i = 0; i < (buffSize - ringBuffer.size()); i++ ){
+                ringBuffer.push_back( MessType() );
+            }
+        }
+    }
+     
 };
+
 
 /*template<typename MessType>
 class MessageDispatcher : public MessageService{
