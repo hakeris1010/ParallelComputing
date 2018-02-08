@@ -74,6 +74,7 @@ private:
             for( auto&& th : receiverThreads ){
                 th->pollAvailable = true;
             }
+            pollableThreads = receiverThreads.size();
 
             if( itemCount > 0 ){
                 readPos++;
@@ -86,6 +87,15 @@ private:
             cond.notify_all();
         } 
         return pollableThreads;
+    }
+
+    void setPollAvailable( std::shared_ptr< ReceiverThreadState > ts, bool val ){
+        if( (ts->pollAvailable) && !val )
+            pollableThreads--;
+        else if( !(ts->pollAvailable) && val )
+            pollableThreads++;     
+
+        ts->pollAvailable = val;
     }
 
 public:
@@ -151,14 +161,14 @@ public:
             auto&& threadID = std::this_thread::get_id();
             auto&& tIter = findReceiverThread( threadID );
 
-            if( tIter == threadsNotReceived.end() ){
+            if( tIter == receiverThreads.end() ){
                 vlog(0,verb,"[pollMsg]: Thread %s hasn't subscribed!\n",toString(threadID));
                 return false;
             }
 
             std::shared_ptr< ReceiverThreadState > threadState = *tIter;
 
-            // Check if poll is available for this thread (hasn't already read current msg.)
+            // Check if poll is available for this thread (hasn't already polled current msg.)
             if( itemCount && threadState->pollAvailable ) 
             {
                 setPollAvailable( threadState, false );
@@ -173,8 +183,9 @@ public:
                     (int)ringBuffer[readPos], toString(threadID).c_str(), 
                     writePos, readPos, itemCount ); 
 
+                // Check if all receivers have polled the current message, and if so,
+                // reset the poll counters, and make threads poll again.
                 checkResetPolls();
-
                  
                 return true;
             }
@@ -196,7 +207,7 @@ public:
      *  We use Condition Variable to wait until all callers have received
      *  the current message on a pointer.
      */ 
-    bool pollMessage_DOOT( MessType& mess ){
+    /*bool pollMessage_DOOT( MessType& mess ){
         if( dispatcherClosed && !itemCount ){
             vlog( 1, verb, " [pollMsg]: Dispatcher is Closed! No more messages to expect!\n" );
             return false;
@@ -219,9 +230,6 @@ public:
             }
 
             // The first case here. Wait until there are items in a buff0r.
-            /*while( !itemCount && !dispatcherClosed ){
-                cond.wait( lock );
-            } */  
 
             // Second case here. Items present. Check if thread hasn't yet consumed the
             // current message. If this thread hasn't yet received the current message
@@ -300,7 +308,7 @@ public:
 
         // Get the "next" message. ("Next" is now the current).
         return pollMessage( mess );
-    }
+    }*/
 
     /*! "Subscribe" to message service. 
      *  - Adds the calling thread's ID to the Receiver Threads lists.
@@ -308,9 +316,7 @@ public:
     bool subscribe(){
         std::lock_guard< std::mutex > lock( mut );
         auto threadID = std::this_thread::get_id();
-        
-        receiverThreadIDs.insert( threadID );
-        threadsNotReceived.insert( threadID );
+        receiverThreads.insert( std::make_shared< ReceiverThreadState >( threadID ) );
     }
 
     /*! "UnSubscribe" from the message service. 
@@ -318,10 +324,13 @@ public:
      */ 
     void unSubscribe(){
         std::lock_guard< std::mutex > lock( mut );
-        auto threadID = std::this_thread::get_id();
 
-        receiverThreadIDs.erase( threadID );
-        threadsNotReceived.erase( threadID );
+        auto&& iter = findReceiverThread( std::this_thread::get_id() );
+        if( iter != receiverThreads.end() ){
+            // Mark thread as no longer subscribed, and erase from the list.
+            (*iter)->isSubscribed = false;
+            receiverThreads.erase( iter );
+        }
     }
 
     /*! Marks dispatcher as "closed", therefore no more message polls will be accepted.
