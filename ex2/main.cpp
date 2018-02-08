@@ -31,6 +31,7 @@ private:
     size_t itemCount = 0;
 
     volatile bool dispatcherClosed = false;
+    volatile bool resetNeeded = false;
 
     std::mutex mut;
     std::condition_variable cond;
@@ -87,6 +88,57 @@ public:
         cond.notify_all(); 
     }
 
+    bool pollMessage( MessType& mess ){
+        if( dispatcherClosed && !itemCount ){
+            vlog( 1, verb, " [pollMsg]: Dispatcher is Closed! No more messages to expect!\n" );
+            return false;
+        }
+
+        {
+            std::unique_lock< std::mutex > lock( mut );
+            auto threadID = std::this_thread::get_id();
+
+            if( threadsNotReceived.find( threadID ) != threadsNotReceived.end() && itemCount ) {
+                threadsNotReceived.erase( threadID );
+
+                if( readPos >= ringBuffer.size() )
+                    readPos = 0;
+
+                mess = ringBuffer[ readPos ]; 
+
+                vlog(2, verb," [pollMsg] (%d): Thread %s RECEIVED this the first time. \n" \
+                             "  writePos: %d, readPos: %d, itemCount: %d\n", 
+                    (int)ringBuffer[readPos], toString(threadID).c_str(), 
+                    writePos, readPos, itemCount ); 
+
+                if( threadsNotReceived.empty() ){
+                    threadsNotReceived = receiverThreadIDs;        
+                    readPos++;
+                    if( itemCount > 0 )
+                        itemCount--;  
+
+                    vlog(2, verb, "\nThis was the last thread which received the message! "\
+                         "Resetting counters, procceeding with the next message.\n");
+
+                    resetNeeded = true;
+
+                    lock.unlock();
+                    cond.notify_all();
+                } 
+                return true;
+            }
+            
+            while( !resetNeeded && !threadsNotReceived.empty() && 
+                   !(dispatcherClosed && !itemCount) )
+            {
+                cond.wait( lock );
+            }
+        }
+
+        // Get the "next" message. ("Next" is now the current).
+        return pollMessage( mess );
+    } 
+
     /*! Critical sections occur in this function.
      *  We use Condition Variable to wait until all callers have received
      *  the current message on a pointer.
@@ -102,7 +154,24 @@ public:
             std::unique_lock< std::mutex > lock( mut );
             auto threadID = std::this_thread::get_id();
 
-            // If this thread hasn't yet received the current message
+            // Several possible situations can occur at this point:
+            // 1) No items in the buffer.
+            // 2) Are items, thread hasn't yet consumed the current item.
+            // 3) Are items, this thread has already consumed the curr. item, and 
+            //    there are still threads which haven't consumed it.
+            
+            // Wait while next item is not yet available, but items are still expected.
+            while( !nextItemAvailable && !(dispatcherClosed && !itemCount) ){
+                cond.wait( lock );                
+            }
+
+            // The first case here. Wait until there are items in a buff0r.
+            /*while( !itemCount && !dispatcherClosed ){
+                cond.wait( lock );
+            } */  
+
+            // Second case here. Items present. Check if thread hasn't yet consumed the
+            // current message. If this thread hasn't yet received the current message
             // (it's ID is still in "threads which haven't received current message"), 
             // get the message, and return.
             if( threadsNotReceived.find( threadID ) != threadsNotReceived.end() && itemCount ) {
@@ -114,7 +183,7 @@ public:
 
                 mess = ringBuffer[ readPos ]; 
 
-                vlog(2, verb," [pollMsg] (%d): Thread %s received this the first time. \n" \
+                vlog(2, verb," [pollMsg] (%d): Thread %s RECEIVED this the first time. \n" \
                              "  writePos: %d, readPos: %d, itemCount: %d\n", 
                     (int)ringBuffer[readPos], toString(threadID).c_str(), 
                     writePos, readPos, itemCount ); 
@@ -131,6 +200,11 @@ public:
                     vlog(2, verb, "\nThis was the last thread which received the message! "\
                          "Resetting counters, procceeding with the next message.\n");
 
+                    // Unlock the mutecks, and safely notify other threads to continue,
+                    // just before returning.
+                    resetNeeded = true;
+
+                    lock.unlock();
                     cond.notify_all();
                 } 
                 return true;
@@ -141,21 +215,29 @@ public:
                  threadsNotReceived.size(), toString(threadID).c_str(),
                  writePos, readPos, itemCount );
 
-            // If this thread has already consumed the current message, wait until 
-            // there are no more threads that haven't consumed the message yet.
+            // Third case. There are items, but this thread has already consumed 
+            // the current message, and there are still other threads which haven't 
+            // consumed the curr. message.
+            // So, wait until there are no more threads that haven't consumed it.
             //   
             // - Condition variable unlocks the mutex, allowing other threads to move 
             //   freely, and waits until notification by calling notify() method.
+            // - After waiting, the mutex lock is automatically Re-Acquired.
             //
-            while( !threadsNotReceived.empty() && !dispatcherClosed ){
+            while( !resetNeeded && !threadsNotReceived.empty() && 
+                   !(dispatcherClosed && !itemCount) )
+            {
                 cond.wait( lock );
 
                 vlog( 4, verb, " [WAIT PollMsg]: Notified! Checking vals: " \
                       "tnr.empty(): %d, dispatcherClosed: %d\n", threadsNotReceived.empty(),
                       dispatcherClosed );
             }
+
+            if( resetNeeded )
+                resetNeeded = false;
+
             // At this point, all threads have received the current message.
-            // After waiting, the mutex lock is automatically Re-Acquired.
             // We assume many receivers were waiting, so them all now are gonna procceed to the
             // next message.
             
@@ -163,7 +245,7 @@ public:
                   toString(threadID).c_str() );
         }
 
-        // Get the next message.
+        // Get the "next" message. ("Next" is now the current).
         return pollMessage( mess );
     }
 
@@ -171,7 +253,7 @@ public:
      *  - Adds the calling thread's ID to the Receiver Threads lists.
      */ 
     bool subscribe(){
-        std::unique_lock< std::mutex > lock( mut );
+        std::lock_guard< std::mutex > lock( mut );
         auto threadID = std::this_thread::get_id();
         
         receiverThreadIDs.insert( threadID );
@@ -182,7 +264,7 @@ public:
      *  - Removes the calling thread's ID from the Receiver Threads lists.
      */ 
     void unSubscribe(){
-        std::unique_lock< std::mutex > lock( mut );
+        std::lock_guard< std::mutex > lock( mut );
         auto threadID = std::this_thread::get_id();
 
         receiverThreadIDs.erase( threadID );
@@ -261,9 +343,9 @@ void receiverRunner( std::shared_ptr< MessageReceiver<int> > rec, size_t waitTim
     int msg;
     rec->subscribe();
     while( rec->pollMessage( msg ) ){
-        if( msg == 1 )
+        if( msg == 0 )
             std::cout << "[Thread "<< std::this_thread::get_id() <<"]: Hello!\n";
-        else if( msg == 2 )
+        else if( msg == 1 )
             std::cout << "[Thread "<< std::this_thread::get_id() <<"]: World!\n"; 
         else
             std::cout << "[Thread "<< std::this_thread::get_id() <<"]: Unknown message.\n"; 
@@ -277,7 +359,7 @@ void receiverRunner( std::shared_ptr< MessageReceiver<int> > rec, size_t waitTim
 /*! Demonstration function dispatching messages.
  */ 
 void dispatcherRunner( std::shared_ptr< MessageDispatcher<int> > dis, size_t waitTime = 0 ){
-    const size_t iters = 1;
+    const size_t iters = 2;
     for( size_t i = 0; i < iters; i++ ){
         dis->dispatchMessage( i % 2 );
         if( waitTime )
