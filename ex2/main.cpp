@@ -104,7 +104,7 @@ private:
 
 public:
     const static size_t DEFAULT_BUFFSIZE = 256;
-    const static size_t DEFAULT_VERBOSITY = 2;
+    const static size_t DEFAULT_VERBOSITY = 0;
 
     /*! Constructor. 
      *  - Creates initial buffer.
@@ -143,8 +143,8 @@ public:
             writePos++;
             itemCount++;
 
-            vlog( 2, verb, "[dispatchMsg]: (%d), writePos: %d, readPos: %d, itemCount: %d\n",
-                  ringBuffer[ writePos - 1 ], writePos, readPos, itemCount );
+            vlog( 2, verb, "[dispatchMsg]: (%p), writePos: %d, readPos: %d, itemCount: %d\n",
+                  &ringBuffer[ writePos - 1 ], writePos, readPos, itemCount );
         }
         // Wake up waiting threads to procceed with message consuming.
         cond.notify_all(); 
@@ -179,9 +179,9 @@ public:
 
                 mess = ringBuffer[ readPos ]; 
 
-                vlog(2, verb," [pollMsg] (%d): Thread %s RECEIVED this the first time. \n" \
+                vlog(2, verb," [pollMsg] (%p): Thread %s RECEIVED this the first time. \n" \
                              "  writePos: %d, readPos: %d, itemCount: %d\n", 
-                    (int)ringBuffer[readPos], toString(threadID).c_str(), 
+                    &ringBuffer[readPos], toString(threadID).c_str(), 
                     writePos, readPos, itemCount ); 
 
                 // Check if all receivers have polled the current message, and if so,
@@ -306,16 +306,32 @@ public:
  *    Using actual values constructed on this function has benefits of preserving the
  *    object for as long as function executes, as we execute it on a thread.
  */ 
-void receiverRunner( std::shared_ptr< MessageReceiver<int> > rec, size_t waitTime = 0 ){
-    int msg;
+template< class MSG >
+void receiverRunner( std::shared_ptr< MessageReceiver<MSG> > rec, size_t waitTime = 0 ){
+    static std::mutex outmut;
+    static volatile size_t maxcount = 0;
+
+    thread_local size_t count = 0;
+    MSG msg;
+    
     rec->subscribe();
     while( rec->pollMessage( msg ) ){
-        if( msg == 0 )
-            std::cout << "[Thread "<< std::this_thread::get_id() <<"]: Hello!\n";
-        else if( msg == 1 )
-            std::cout << "[Thread "<< std::this_thread::get_id() <<"]: World!\n"; 
-        else
-            std::cout << "[Thread "<< std::this_thread::get_id() <<"]: Unknown message.\n"; 
+        {
+            // Lock the critical section - printing data and reading/modifying maxcount.
+            std::lock_guard< std::mutex > lock( outmut );
+
+            // If current thread's counter is higher than the thread's with highest 
+            // read message counter, it means our thread is first to poll a new message.
+            count++;
+            if( count > maxcount ){
+                maxcount = count;
+                std::cout << "\n";
+            } 
+
+            // And print the message, flushing cout at the end.
+            std::cout << "[Thread "<< std::this_thread::get_id() <<"]: "<< msg <<"\n";
+            std::cout << std::flush; 
+        }
 
         if( waitTime )
             std::this_thread::sleep_for( std::chrono::milliseconds( waitTime ) );
@@ -325,10 +341,15 @@ void receiverRunner( std::shared_ptr< MessageReceiver<int> > rec, size_t waitTim
 
 /*! Demonstration function dispatching messages.
  */ 
-void dispatcherRunner( std::shared_ptr< MessageDispatcher<int> > dis, size_t waitTime = 0 ){
-    const size_t iters = 2;
+void dispatcherRunner( std::shared_ptr< MessageDispatcher< std::string > > dis, 
+                       size_t waitTime = 0 )
+{
+    const size_t iters = 3;
     for( size_t i = 0; i < iters; i++ ){
-        dis->dispatchMessage( i % 2 );
+        std::string msg = ( i%2 ? "Hello" : "World" );
+
+        dis->dispatchMessage( std::move( msg ) );
+
         if( waitTime )
             std::this_thread::sleep_for( std::chrono::milliseconds( waitTime ) );
     }
@@ -342,18 +363,18 @@ int main(){
     const size_t receiverCount = 10;
 
     // Create a message communication service.
-    MessageService<int> service;
+    MessageService< std::string > service;
 
     // Spawn receivers.
     std::vector< std::thread > receiverPool;
     receiverPool.reserve( receiverCount );
     for( size_t i = 0; i < receiverCount; i++ ){
-        receiverPool.push_back( std::thread( receiverRunner, 
-            std::make_shared< MessageReceiver<int> >( service ), 0 ) );
+        receiverPool.push_back( std::thread( receiverRunner<std::string>, 
+            std::make_shared< MessageReceiver< std::string > >( service ), i*50 ) );
     }
 
     // Dispatcher - this thread.
-    dispatcherRunner( std::make_shared< MessageDispatcher<int> >( service ), 0 );
+    dispatcherRunner( std::make_shared< MessageDispatcher<std::string> >( service ), 30 );
 
     // Join all threads.
     for( auto&& th : receiverPool ){
