@@ -24,7 +24,7 @@ std::string toString( const auto& a ){
 
 struct ReceiverThreadState{
     std::thread::id id;
-    volatile bool pollAvailable = false;
+    volatile bool pollAvailable = true;
     volatile bool isSubscribed = true;
 
     bool operator< (const ReceiverThreadState& other) const {
@@ -52,16 +52,21 @@ private:
     std::mutex mut;
     std::condition_variable cond;
 
-    std::set< std::shared_ptr<ReceiverThreadState>, 
-              bool( const std::shared_ptr<ReceiverThreadState>&,
-                    const std::shared_ptr<ReceiverThreadState>& )
-            > receiverThreads;
+    static const constexpr auto lambdaComp = 
+        []( const std::shared_ptr<ReceiverThreadState>& item1, 
+            const std::shared_ptr<ReceiverThreadState>& item2 ) -> bool
+        { return (*item1) < (*item2); };
+
+    //std::set< std::shared_ptr<ReceiverThreadState>, decltype( lambdaComp ) > receiverThreads;
+    std::set< std::shared_ptr<ReceiverThreadState> > receiverThreads;
 
     size_t pollableThreads = 0;
 
     /*! These private functions assume lock is already acquired.
+     * 
+     * - Returns an iterator to std::shared_ptr to threadState object with id = id.
      */ 
-    auto&& findReceiverThread( std::thread::id id ){
+    auto findReceiverThread( std::thread::id id ){
         return receiverThreads.find( std::make_shared< ReceiverThreadState >( id ) );
     }
 
@@ -109,12 +114,8 @@ public:
                     std::initializer_list<MessType>&& initialMess = {},
                     int _verbosity = DEFAULT_VERBOSITY )
     : ringBuffer( initialMess ), writePos( initialMess.size() ), 
-      itemCount( initialMess.size() ), verb( _verbosity ),
-      receiverThreads( 
-        []( const std::shared_ptr<ReceiverThreadState>& item1,
-            const std::shared_ptr<ReceiverThreadState>& item2 ) -> bool
-        { return (*item1) < (*item2); } 
-      )
+      itemCount( initialMess.size() ), verb( _verbosity )
+      //receiverThreads( lambdaComp )
     {
         if( ringBuffer.size() < buffSize ){
             ringBuffer.reserve( buffSize );
@@ -162,7 +163,8 @@ public:
             auto&& tIter = findReceiverThread( threadID );
 
             if( tIter == receiverThreads.end() ){
-                vlog(0,verb,"[pollMsg]: Thread %s hasn't subscribed!\n",toString(threadID));
+                vlog( 0, verb, "[pollMsg]: Thread %s hasn't subscribed!\n",
+                      toString(threadID).c_str() );
                 return false;
             }
 
@@ -192,8 +194,8 @@ public:
             
             // If thread has already received the message (or no available), 
             // wait until new message appears - new poll becomes available.
-            while( !(threadState->pollAvailable) && threadState->isSubscribed && 
-                   !(dispatcherClosed && !itemCount) )
+            while( ( !(threadState->pollAvailable) || !itemCount ) && 
+                   threadState->isSubscribed && !(dispatcherClosed && !itemCount) )
             {
                 cond.wait( lock );
             }
@@ -333,7 +335,7 @@ public:
         }
     }
 
-    /*! Marks dispatcher as "closed", therefore no more message polls will be accepted.
+    /*! Marks dispatcher as "closed", hencefore no more message polls will be accepted.
      */ 
     void closeDispatcher(){
         dispatcherClosed = true;
