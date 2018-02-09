@@ -7,6 +7,7 @@
 #include <set>
 #include <memory>
 #include <sstream>
+#include <functional>
 
 template< typename... Args >
 void vlog( const int threshold, int verbosity, const char* str, Args&&... args ){
@@ -37,6 +38,11 @@ struct ReceiverThreadState{
     ReceiverThreadState( std::thread::id _id ) : id( _id ) {}
 };
 
+constexpr auto compareLambda = 
+    []( const std::shared_ptr<ReceiverThreadState>& item1, 
+        const std::shared_ptr<ReceiverThreadState>& item2 ) -> bool
+    { return (*item1) < (*item2); };
+
 template<class MessType>
 class MessageService{
 private:
@@ -52,18 +58,11 @@ private:
     std::mutex mut;
     std::condition_variable cond;
 
-    static const constexpr auto lambdaComp = 
-        []( const std::shared_ptr<ReceiverThreadState>& item1, 
-            const std::shared_ptr<ReceiverThreadState>& item2 ) -> bool
-        { return (*item1) < (*item2); };
-
-    //std::set< std::shared_ptr<ReceiverThreadState>, decltype( lambdaComp ) > receiverThreads;
-    std::set< std::shared_ptr<ReceiverThreadState> > receiverThreads;
+    std::set< std::shared_ptr<ReceiverThreadState>, decltype(compareLambda) > receiverThreads;
 
     size_t pollableThreads = 0;
 
     /*! These private functions assume lock is already acquired.
-     * 
      * - Returns an iterator to std::shared_ptr to threadState object with id = id.
      */ 
     auto findReceiverThread( std::thread::id id ){
@@ -114,8 +113,8 @@ public:
                     std::initializer_list<MessType>&& initialMess = {},
                     int _verbosity = DEFAULT_VERBOSITY )
     : ringBuffer( initialMess ), writePos( initialMess.size() ), 
-      itemCount( initialMess.size() ), verb( _verbosity )
-      //receiverThreads( lambdaComp )
+      itemCount( initialMess.size() ), verb( _verbosity ),
+      receiverThreads( compareLambda )
     {
         if( ringBuffer.size() < buffSize ){
             ringBuffer.reserve( buffSize );
