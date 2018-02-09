@@ -204,120 +204,22 @@ public:
         return pollMessage( mess );
     } 
 
-    /*! Critical sections occur in this function.
-     *  We use Condition Variable to wait until all callers have received
-     *  the current message on a pointer.
-     */ 
-    /*bool pollMessage_DOOT( MessType& mess ){
-        if( dispatcherClosed && !itemCount ){
-            vlog( 1, verb, " [pollMsg]: Dispatcher is Closed! No more messages to expect!\n" );
-            return false;
-        }
-
-        // Lock scope.
-        {
-            std::unique_lock< std::mutex > lock( mut );
-            auto threadID = std::this_thread::get_id();
-
-            // Several possible situations can occur at this point:
-            // 1) No items in the buffer.
-            // 2) Are items, thread hasn't yet consumed the current item.
-            // 3) Are items, this thread has already consumed the curr. item, and 
-            //    there are still threads which haven't consumed it.
-            
-            // Wait while next item is not yet available, but items are still expected.
-            while( !nextItemAvailable && !(dispatcherClosed && !itemCount) ){
-                cond.wait( lock );                
-            }
-
-            // The first case here. Wait until there are items in a buff0r.
-
-            // Second case here. Items present. Check if thread hasn't yet consumed the
-            // current message. If this thread hasn't yet received the current message
-            // (it's ID is still in "threads which haven't received current message"), 
-            // get the message, and return.
-            if( threadsNotReceived.find( threadID ) != threadsNotReceived.end() && itemCount ) {
-                threadsNotReceived.erase( threadID );
-
-                // Get the current message.
-                if( readPos >= ringBuffer.size() )
-                    readPos = 0;
-
-                mess = ringBuffer[ readPos ]; 
-
-                vlog(2, verb," [pollMsg] (%d): Thread %s RECEIVED this the first time. \n" \
-                             "  writePos: %d, readPos: %d, itemCount: %d\n", 
-                    (int)ringBuffer[readPos], toString(threadID).c_str(), 
-                    writePos, readPos, itemCount ); 
-
-                // Check if it's the last thread which received current message.
-                // If so, reset lists, and notify the waiting threads to procceed 
-                // with the next message.
-                if( threadsNotReceived.empty() ){
-                    threadsNotReceived = receiverThreadIDs;        
-                    readPos++;
-                    if( itemCount > 0 )
-                        itemCount--;  
-
-                    vlog(2, verb, "\nThis was the last thread which received the message! "\
-                         "Resetting counters, procceeding with the next message.\n");
-
-                    // Unlock the mutecks, and safely notify other threads to continue,
-                    // just before returning.
-                    resetNeeded = true;
-
-                    lock.unlock();
-                    cond.notify_all();
-                } 
-                return true;
-            }
-
-            vlog(2, verb," [pollMsg]: %d Threads still haven't read current msg. " \
-                 "Curr. thread (%s) waiting.\n  writePos: %d, readPos: %d, itemCount: %d\n", 
-                 threadsNotReceived.size(), toString(threadID).c_str(),
-                 writePos, readPos, itemCount );
-
-            // Third case. There are items, but this thread has already consumed 
-            // the current message, and there are still other threads which haven't 
-            // consumed the curr. message.
-            // So, wait until there are no more threads that haven't consumed it.
-            //   
-            // - Condition variable unlocks the mutex, allowing other threads to move 
-            //   freely, and waits until notification by calling notify() method.
-            // - After waiting, the mutex lock is automatically Re-Acquired.
-            //
-            while( !resetNeeded && !threadsNotReceived.empty() && 
-                   !(dispatcherClosed && !itemCount) )
-            {
-                cond.wait( lock );
-
-                vlog( 4, verb, " [WAIT PollMsg]: Notified! Checking vals: " \
-                      "tnr.empty(): %d, dispatcherClosed: %d\n", threadsNotReceived.empty(),
-                      dispatcherClosed );
-            }
-
-            if( resetNeeded )
-                resetNeeded = false;
-
-            // At this point, all threads have received the current message.
-            // We assume many receivers were waiting, so them all now are gonna procceed to the
-            // next message.
-            
-            vlog( 3, verb," [pollMsg]: Thread %s is OUT OF WAIT! Proceeding to next msg.\n",
-                  toString(threadID).c_str() );
-        }
-
-        // Get the "next" message. ("Next" is now the current).
-        return pollMessage( mess );
-    }*/
-
     /*! "Subscribe" to message service. 
      *  - Adds the calling thread's ID to the Receiver Threads lists.
      */ 
     bool subscribe(){
         std::lock_guard< std::mutex > lock( mut );
-        auto threadID = std::this_thread::get_id();
-        receiverThreads.insert( std::make_shared< ReceiverThreadState >( threadID ) );
+
+        // Create new Thread State, and increment pollable thread counter.
+        auto thState = std::make_shared<ReceiverThreadState>( std::this_thread::get_id() );
+        auto res = receiverThreads.insert( thState );
+
+        // insert() returns std::pair, with second element indicating if new 
+        // element was inserted to a set.
+        if( res.second ){
+            thState->pollAvailable = true;
+            pollableThreads++;
+        }
     }
 
     /*! "UnSubscribe" from the message service. 
@@ -328,6 +230,8 @@ public:
 
         auto&& iter = findReceiverThread( std::this_thread::get_id() );
         if( iter != receiverThreads.end() ){
+            setPollAvailable( *iter, false );
+
             // Mark thread as no longer subscribed, and erase from the list.
             (*iter)->isSubscribed = false;
             receiverThreads.erase( iter );
