@@ -23,6 +23,46 @@ std::string toString( const auto& a ){
     return str.str();
 }
 
+/*! TODO:
+ * Pollability Control & Configuration classes.
+ * - Checks and controls message receiver's ability to poll new messages.
+ * - pollAvailable( id ) indicate whether this ID is able to poll a new message,
+ *   must wait, or is no longer allowed to poll at all.  
+ */ 
+class PollController{
+public:
+    // Pollability results.
+    static const int POLL_WAIT      = 0;
+    static const int POLL_AVAILABLE = 1;
+    static const int POLL_REJECTED  = 2;
+
+    /*! Methods to Subscribe / UnSubscribe from message service.
+     *  - Adds/removes the calling thread to/from the inner data structure of 
+     *    thread states, and performs required actions.
+     */ 
+    bool subscribe() = 0;
+    void unSubscribe() = 0;
+    
+    /*! Checks poll availability for calling thread or supplied thread's id.
+     *  - Doesn't modify any inner states, just returns whether poll's available.
+     *  @return one of Pollability Results (above).
+     */ 
+    int pollAvailability() = 0;
+    int pollAvailability( std::thread::id id ) = 0;
+
+    /*! Performs Poll actions for the thread calling / supplied thread's id.
+     *  - MUST BE CALLED EVERY TIME when polling for messages occur in the
+     *    controller's user structure.
+     *  - Modifies states according to the model used.  
+     *  @return one of Pollability Results (above).
+     */ 
+    int poll() = 0;
+    int poll( std::thread::id id ) = 0;
+};
+
+
+/*! Thread State structure used by the poll controller.
+ */  
 struct ReceiverThreadState{
     std::thread::id id;
     volatile bool pollAvailable = true;
@@ -38,19 +78,43 @@ struct ReceiverThreadState{
     ReceiverThreadState( std::thread::id _id ) : id( _id ) {}
 };
 
-/*! TODO:
- * Pollability Control & Configuration classes.
- * - Checks and controls message receiver's ability to poll new messages.
- * - pollAvailable( id ) indicate whether this ID is able to poll a new message,
- *   must wait, or is no longer allowed to poll at all.  
- */ 
-
 /*! Thread State comparation lambda.
  */ 
 constexpr auto compareLambda = 
     []( const std::shared_ptr<ReceiverThreadState>& item1, 
         const std::shared_ptr<ReceiverThreadState>& item2 ) -> bool
     { return (*item1) < (*item2); };
+
+/*! Poll controller which ensures synchronized message polling.
+ *  - In other words, a receiving thread can't poll the next message if other 
+ *    receiving threads haven't yet polled the current message.
+ *  - If thread has polled current message and tries to poll the next one,
+ *    it must sleep until all other receiver threads have polled the current msg too.
+ */
+class SynchronizedBarrierPollControl : public PollController {
+private:
+    // Mutex protecting the inner workings.
+    std::mutex mut;
+
+    // Thread state structures.
+    std::set< std::shared_ptr<ReceiverThreadState>, decltype(compareLambda) > receiverThreads;
+    size_t pollableThreads = 0; 
+
+public:
+    SynchronizedBarrierPollControl( std::initializer_list&& initialReceivers = {} )
+        : receiverThreads( compareLambda, initialReceivers )
+    {}
+
+    // Interface method implementations.
+    bool subscribe();
+    void unSubscribe();
+    int pollAvailability();
+    int pollAvailability( std::thread::id id );
+    int poll();
+    int poll( std::thread::id id );
+};
+
+
 
 template<class MessType>
 class MessageService{
@@ -67,9 +131,9 @@ private:
     std::mutex mut;
     std::condition_variable cond;
 
+    // delet this
     std::set< std::shared_ptr<ReceiverThreadState>, decltype(compareLambda) > receiverThreads;
-
-    size_t pollableThreads = 0;
+    size_t pollableThreads = 0; 
 
     /*! These private functions assume lock is already acquired.
      * - Returns an iterator to std::shared_ptr to threadState object with id = id.
