@@ -38,6 +38,15 @@ struct ReceiverThreadState{
     ReceiverThreadState( std::thread::id _id ) : id( _id ) {}
 };
 
+/*! TODO:
+ * Pollability Control & Configuration classes.
+ * - Checks and controls message receiver's ability to poll new messages.
+ * - pollAvailable( id ) indicate whether this ID is able to poll a new message,
+ *   must wait, or is no longer allowed to poll at all.  
+ */ 
+
+/*! Thread State comparation lambda.
+ */ 
 constexpr auto compareLambda = 
     []( const std::shared_ptr<ReceiverThreadState>& item1, 
         const std::shared_ptr<ReceiverThreadState>& item2 ) -> bool
@@ -64,12 +73,15 @@ private:
 
     /*! These private functions assume lock is already acquired.
      * - Returns an iterator to std::shared_ptr to threadState object with id = id.
+     *  @param id - Thread's ID.
      */ 
     auto findReceiverThread( std::thread::id id ){
         return receiverThreads.find( std::make_shared< ReceiverThreadState >( id ) );
     }
 
-    /*! Checks available polls, and resets poll counter if needed. 
+    /*! ======== Synchronized Barrier Service functions. ==========  
+     *
+     * Checks available polls, and resets poll counter if needed. 
      *  - If all threads have already polled current message, reset poll 
      *    availability, and move on to the next message.
      */ 
@@ -346,12 +358,12 @@ void dispatcherRunner( std::shared_ptr< MessageDispatcher< std::string > > dis,
 {
     const size_t iters = 3;
     for( size_t i = 0; i < iters; i++ ){
+        if( waitTime )
+            std::this_thread::sleep_for( std::chrono::milliseconds( waitTime ) ); 
+         
         std::string msg = ( i%2 ? "Hello" : "World" );
 
         dis->dispatchMessage( std::move( msg ) );
-
-        if( waitTime )
-            std::this_thread::sleep_for( std::chrono::milliseconds( waitTime ) );
     }
     dis->closeDispatcher();
 }
