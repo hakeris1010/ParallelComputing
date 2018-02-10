@@ -1,0 +1,5 @@
+#!/bin/bash
+g++ --std=c++14 -c -O0 -fno-inline-functions main.cpp -o main.o
+g++ -o bin/ex3 main.o -lpthread
+
+
