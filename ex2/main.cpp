@@ -32,9 +32,9 @@ std::string toString( const auto& a ){
 class PollController{
 public:
     // Pollability results.
-    static const int POLL_WAIT      = 0;
-    static const int POLL_AVAILABLE = 1;
-    static const int POLL_REJECTED  = -1;
+    static const int POLLAVAIL_WAIT      = 0;
+    static const int POLLAVAIL_AVAILABLE = 1;
+    static const int POLLAVAIL_REJECTED  = -1;
 
     /*! Methods to Subscribe / UnSubscribe from message service.
      *  - Adds/removes the calling thread to/from the inner data structure of 
@@ -45,16 +45,18 @@ public:
     
     /*! Checks poll availability for calling thread or supplied thread's id.
      *  - Doesn't modify any inner states, just returns whether poll's available.
-     *  @return one of Pollability Results (above).
+     *  @return one of Pollability Results (above), or custom result.
+     *          Naming starts with "POLLAVAIL_" .
      */ 
-    virtual int pollAvailability() = 0;
-    virtual int pollAvailability( std::thread::id id ) = 0;
+    virtual int pollAvailability() const = 0;
+    virtual int pollAvailability( std::thread::id id ) const = 0;
 
     /*! Performs Poll actions for the thread calling / supplied thread's id.
-     *  - MUST BE CALLED EVERY TIME when polling for messages occur in the
-     *    controller's user structure.
+     *  - MUST BE CALLED ONLY WHEN POLL IS AVAILABLE, EVERY TIME 
+     *    when polling for messages occur in the controller's user structure.
      *  - Modifies states according to the model used.  
-     *  @return one of Pollability Results (above).
+     *  @return the action value specified in the implementation class.
+     *          Naming starts with "POLLACTION_".
      */ 
     virtual int poll() = 0;
     virtual int poll( std::thread::id id ) = 0;
@@ -94,7 +96,7 @@ constexpr auto compareLambda =
 class SynchronizedBarrierPollControl : public PollController {
 private:
     // Mutex protecting the inner workings.
-    std::mutex mut;
+    mutable std::mutex mut;
 
     // Thread state structures.
     std::set< std::shared_ptr<ReceiverThreadState>, decltype(compareLambda) > receiverThreads;
@@ -105,7 +107,7 @@ private:
     /* Returns an iterator to std::shared_ptr to threadState object with id = id.
      *  @param id - Thread's ID.
      */ 
-    auto findReceiverThread( std::thread::id id ){
+    auto findReceiverThread( std::thread::id id ) const {
         return receiverThreads.find( std::make_shared< ReceiverThreadState >( id ) );
     } 
 
@@ -122,15 +124,28 @@ private:
     } 
 
 public:
-    SynchronizedBarrierPollControl( std::initializer_list&& initialReceivers = {} )
-        : receiverThreads( compareLambda, initialReceivers )
-    {}
+    // Poll values.
+    static const int POLLACTION_REJECTED = 0;
+    static const int POLLACTION_READ = 1;
+    static const int POLLACTION_READ_ADVANCE = 2;
+
+    // Ctor. Can assign initial receiver threads.
+    SynchronizedBarrierPollControl( std::initializer_list<ReceiverThreadState>&& 
+                                        initialReceivers = {} )
+        : receiverThreads( compareLambda )
+    {
+        for( auto&& st : initialReceivers ){
+            receiverThreads.insert( std::make_shared<ReceiverThreadState>( std::move(st) ) );
+        }
+    }
 
     // Interface method implementations.
     bool subscribe();
     void unSubscribe();
-    int pollAvailability();
-    int pollAvailability( std::thread::id id );
+
+    int pollAvailability() const ;
+    int pollAvailability( std::thread::id id ) const;
+
     int poll();
     int poll( std::thread::id id );
 };
@@ -140,16 +155,25 @@ public:
  * Checks available polls, and resets poll counter if needed. 
  *  - If all threads have already polled current message, reset poll 
  *    availability, and move on to the next message.
+ *  @param threadID - id of the receiver thread performing the poll.
+ *  @return action: one of these:
+ *    - POLLACTION_REJECTED - the poll is not available for this thread.
+ *    - POLLACTION_READ     - read the current message and return it as a polled one.
+ *    - POLLACTION_READ_ADVANCE - read current message, and advance global message 
+ *      counter, for all waiting receiver threads to procceed with the next msg.
  */ 
-int SynchronizedBarrierPollControl::poll(){
-    auto&& tIter = findReceiverThread( std::this_thread::get_id() );
+int SynchronizedBarrierPollControl::poll( std::thread::id threadID ){
+    std::lock_guard< std::mutex > lock( mut );
+
+    auto&& tIter = findReceiverThread( threadID );
     if( tIter == receiverThreads.end() ){
-        vlog( 0, verb, "[poll()]: Thread %s hasn't subscribed!\n",
-              toString(threadID).c_str() );
-        return false;
+        return POLLACTION_REJECTED;
     }
 
     std::shared_ptr< ReceiverThreadState > threadState = *tIter;     
+
+    // Mark this thread as "already polled"
+    setPollAvailable( threadState, false );
 
     // If no threads can poll, it means all threads already polled current message.
     // Reset poll counter and data.
@@ -159,20 +183,45 @@ int SynchronizedBarrierPollControl::poll(){
         }
         pollableThreads = receiverThreads.size();
 
-        if( itemCount > 0 ){
-            readPos++;
-            itemCount--;  
-        }
-
-        vlog(2, verb, "\n[poll()]: This was the last thread which received the message! "\
-                      "Resetting counters, procceeding with the next message.\n");
-
-        cond.notify_all();
+        return POLLACTION_READ_ADVANCE;
     } 
-    return pollableThreads;
+
+    // Return ability to poll.
+    return POLLACTION_READ;
 }
 
+/*! Executes poll actions for the current thread.
+ */ 
+int SynchronizedBarrierPollControl::poll(){
+    return poll( std::this_thread::get_id() );
+}
 
+/*! Returns poll availability value for the thread with id = threadID.
+ *  @return one of POLLAVAIL values:
+ *  - POLLAVAIL_WAIT - thread must wait until poll becomes available.
+ *  - POLLAVAIL_AVAILABLE - thread can poll a message 
+ *      - When polling, MUST call a poll() method on this object.
+ *  - POLLAVAIL_REJECTED - thread can't poll.
+ */ 
+int SynchronizedBarrierPollControl::pollAvailability( std::thread::id threadID ) const {
+    std::lock_guard< std::mutex > lock( mut );
+    
+    // Get the iterator to the thread state object of this id.
+    auto&& iter = findReceiverThread( threadID );
+
+    // Thread not subscribed - rejected.
+    if( iter == receiverThreads.end() ) 
+        return POLLAVAIL_REJECTED;
+
+    // Return whether this thread can poll or must wait, if poll's not available.
+    return ( (*iter)->pollAvailable ? POLLAVAIL_AVAILABLE : POLLAVAIL_WAIT );
+}
+
+/*! Checks poll availability for the current thread.
+ */ 
+int SynchronizedBarrierPollControl::pollAvailability() const {
+    return pollAvailability( std::this_thread::get_id() );
+}
 
 /*! "Subscribe" to message service. 
  *  - Adds the calling thread's ID to the Receiver Threads lists.
@@ -217,58 +266,12 @@ private:
     size_t itemCount = 0;
 
     volatile bool dispatcherClosed = false;
-    volatile bool resetNeeded = false;
     int verb = 0;
+
+    std::unique_ptr< PollController > controller;
 
     std::mutex mut;
     std::condition_variable cond;
-
-    // delet this
-    std::set< std::shared_ptr<ReceiverThreadState>, decltype(compareLambda) > receiverThreads;
-    size_t pollableThreads = 0; 
-
-    /*! These private functions assume lock is already acquired.
-     * - Returns an iterator to std::shared_ptr to threadState object with id = id.
-     *  @param id - Thread's ID.
-     */ 
-    auto findReceiverThread( std::thread::id id ){
-        return receiverThreads.find( std::make_shared< ReceiverThreadState >( id ) );
-    }
-
-    /*! ======== Synchronized Barrier Service functions. ==========  
-     *
-     * Checks available polls, and resets poll counter if needed. 
-     *  - If all threads have already polled current message, reset poll 
-     *    availability, and move on to the next message.
-     */ 
-    size_t checkResetPolls(){
-        if( !pollableThreads ){
-            for( auto&& th : receiverThreads ){
-                th->pollAvailable = true;
-            }
-            pollableThreads = receiverThreads.size();
-
-            if( itemCount > 0 ){
-                readPos++;
-                itemCount--;  
-            }
-
-            vlog(2, verb, "\nThis was the last thread which received the message! "\
-                 "Resetting counters, procceeding with the next message.\n");
-
-            cond.notify_all();
-        } 
-        return pollableThreads;
-    }
-
-    void setPollAvailable( std::shared_ptr< ReceiverThreadState > ts, bool val ){
-        if( (ts->pollAvailable) && !val )
-            pollableThreads--;
-        else if( !(ts->pollAvailable) && val )
-            pollableThreads++;     
-
-        ts->pollAvailable = val;
-    }
 
 public:
     const static size_t DEFAULT_BUFFSIZE = 256;
@@ -282,7 +285,7 @@ public:
                     int _verbosity = DEFAULT_VERBOSITY )
     : ringBuffer( initialMess ), writePos( initialMess.size() ), 
       itemCount( initialMess.size() ), verb( _verbosity ),
-      receiverThreads( compareLambda )
+      controller( std::make_unique<SynchronizedBarrierPollControl>() )
     {
         if( ringBuffer.size() < buffSize ){
             ringBuffer.reserve( buffSize );
@@ -324,86 +327,74 @@ public:
             return false;
         }
 
+        std::unique_lock< std::mutex > lock( mut );
+        auto&& threadID = std::this_thread::get_id();
+
+        // If this thread has already received the message, or no available, 
+        // wait until new message appears, or all other threads poll the current
+        // message - a new poll becomes available.
+        //
+        // In other words, wait until controller tells us to wait.
+        //
+        int pollAv;
+        while( ( (pollAv = controller->pollAvailability( threadID )) == 
+                 SynchronizedBarrierPollControl::POLLAVAIL_WAIT || !itemCount ) 
+               && !(dispatcherClosed && !itemCount) )
         {
-            std::unique_lock< std::mutex > lock( mut );
-            auto&& threadID = std::this_thread::get_id();
-            auto&& tIter = findReceiverThread( threadID );
-
-            if( tIter == receiverThreads.end() ){
-                vlog( 0, verb, "[pollMsg]: Thread %s hasn't subscribed!\n",
-                      toString(threadID).c_str() );
-                return false;
-            }
-
-            std::shared_ptr< ReceiverThreadState > threadState = *tIter;
-
-            // Check if poll is available for this thread (hasn't already polled current msg.)
-            if( itemCount && threadState->pollAvailable ) 
-            {
-                setPollAvailable( threadState, false );
-
-                if( readPos >= ringBuffer.size() )
-                    readPos = 0;
-
-                mess = ringBuffer[ readPos ]; 
-
-                vlog(2, verb," [pollMsg] (%p): Thread %s RECEIVED this the first time. \n" \
-                             "  writePos: %d, readPos: %d, itemCount: %d\n", 
-                    &ringBuffer[readPos], toString(threadID).c_str(), 
-                    writePos, readPos, itemCount ); 
-
-                // Check if all receivers have polled the current message, and if so,
-                // reset the poll counters, and make threads poll again.
-                checkResetPolls();
-                 
-                return true;
-            }
-            
-            // If thread has already received the message (or no available), 
-            // wait until new message appears - new poll becomes available.
-            while( ( !(threadState->pollAvailable) || !itemCount ) && 
-                   threadState->isSubscribed && !(dispatcherClosed && !itemCount) )
-            {
-                cond.wait( lock );
-            }
+            cond.wait( lock );
         }
 
-        // Get the "next" message. ("Next" is now the current).
-        return pollMessage( mess );
+        // If poll's available, get poll consequence action.
+        if( pollAv == SynchronizedBarrierPollControl::POLLAVAIL_AVAILABLE && itemCount ){
+            auto pollAct = controller->poll( threadID );
+
+            if( pollAct == SynchronizedBarrierPollControl::POLLACTION_REJECTED )
+                return false;
+            
+            if( readPos >= ringBuffer.size() )
+                readPos = 0;
+
+            mess = ringBuffer[ readPos ]; 
+
+            vlog(2, verb," [pollMsg] (%p): Thread %s RECEIVED this the first time. \n" \
+                         "  writePos: %d, readPos: %d, itemCount: %d\n", 
+                &ringBuffer[readPos], toString(threadID).c_str(), 
+                writePos, readPos, itemCount );  
+
+            // Check if all receivers have polled the current message, and if so,
+            // reset the poll counters, and make threads poll again. 
+            if( pollAct == SynchronizedBarrierPollControl::POLLACTION_READ_ADVANCE ){
+                readPos++;
+                itemCount--;   
+                 
+                vlog(2, verb, "\nThis was the last thread which received the message! "\
+                 "Resetting counters, procceeding with the next message.\n");
+
+                cond.notify_all();  
+            }
+
+            return true;
+        }
+         
+        // If we reached this point, it means that polls are 
+        // no longer available for this thread.
+        vlog( 0, verb, "[pollMsg]: Thread's %s poll request has been rejected!\n",
+              toString(threadID).c_str() );
+        return false;
     } 
 
     /*! "Subscribe" to message service. 
      *  - Adds the calling thread's ID to the Receiver Threads lists.
      */ 
     bool subscribe(){
-        std::lock_guard< std::mutex > lock( mut );
-
-        // Create new Thread State, and increment pollable thread counter.
-        auto thState = std::make_shared<ReceiverThreadState>( std::this_thread::get_id() );
-        auto res = receiverThreads.insert( thState );
-
-        // insert() returns std::pair, with second element indicating if new 
-        // element was inserted to a set.
-        if( res.second ){
-            thState->pollAvailable = true;
-            pollableThreads++;
-        }
+        controller->subscribe();
     }
 
     /*! "UnSubscribe" from the message service. 
      *  - Removes the calling thread's ID from the Receiver Threads lists.
      */ 
     void unSubscribe(){
-        std::lock_guard< std::mutex > lock( mut );
-
-        auto&& iter = findReceiverThread( std::this_thread::get_id() );
-        if( iter != receiverThreads.end() ){
-            setPollAvailable( *iter, false );
-
-            // Mark thread as no longer subscribed, and erase from the list.
-            (*iter)->isSubscribed = false;
-            receiverThreads.erase( iter );
-        }
+        controller->unSubscribe(); 
     }
 
     /*! Marks dispatcher as "closed", hencefore no more message polls will be accepted.
