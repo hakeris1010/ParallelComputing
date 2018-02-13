@@ -155,11 +155,13 @@ struct Pixel{
     {}
 
     bool operator==( const Pixel& p ){
-        return red == p.red && green == p.green && blue == p.blue && alpha == p.alpha;
+        //return red == p.red && green == p.green && blue == p.blue && alpha == p.alpha;
+        return *((uint32_t*) &red) == *((uint32_t*) &(p.red));
     }
 
     bool operator<( const Pixel& p ){
-        return red < p.red || green < p.green || blue < p.blue || alpha < p.alpha;
+        //return red < p.red || green < p.green || blue < p.blue || alpha < p.alpha;
+        return *((uint32_t*) &red) < *((uint32_t*) &(p.red));
     }
 
     bool isSimilar( const Pixel& p, char thr ){
@@ -167,6 +169,10 @@ struct Pixel{
                abs(blue - p.blue) <= thr && abs(alpha - p.alpha) <= thr;
     }
 };
+
+
+
+
 
 /*void oneDimVector( std::vector<size_t> dimensions, size_t repeats ){
     // Set size of the matrix vector and coordinates of the element to be
@@ -208,15 +214,44 @@ void oneDimVector( size_t wid, size_t hei, size_t repeats ){
 
     // Access the element "repeats" times.
     for( size_t i = 0; i < repeats; i++ ){
-        size_t index = y*wid
+        size_t index = y*wid + x;
+        /*if( index >= vect.size() ){
+            std::cout << "Index " << index << " is out of bounds!\n";
+            break;
+        }*/
+
+        // Dereference a member.
+        auto&& el = vect[ index ];
+    }
+}
+
+void twoDimVector( size_t wid, size_t hei, size_t repeats ){
+    // 2-dimensional matrix vector storing columns inside a row.
+    std::vector< std::vector<int> > vect( wid, std::vector<int>( hei ) );
+    size_t x = wid/2;
+    size_t y = hei/2;
+
+    // Access the element "repeats" times.
+    for( size_t i = 0; i < repeats; i++ ){
+        /*if( y >= vect.size() || x >= vect[0].size() ){
+            std::cout << "Index " << index << " is out of bounds!\n";
+            break;
+        }*/
+
+        // Dereference a member.
+        auto&& el = vect[ x ][ y ];
     }
 }
 
 int main(){
-    size_t count = 100000;
+    size_t reps = 10000000;
+    size_t wid = 10;
+    size_t hei = 20;
 
-    //std::cout<< "foo() took "<< gtools::functionExecTime( foo, count ).count() <<" s\n";
-    //std::cout<< "foo2() took "<< gtools::functionExecTime( foo2, count ).count() <<" s\n";
+    std::cout<< "foo() took "<< gtools::functionExecTime( 
+        oneDimVector, wid, hei, reps ).count() <<" s\n";
+    std::cout<< "foo2() took "<< gtools::functionExecTime( 
+        twoDimVector, wid, hei, reps ).count() <<" s\n";
 
     return 0;
 }
