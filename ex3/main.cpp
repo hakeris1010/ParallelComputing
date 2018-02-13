@@ -114,6 +114,9 @@ private:
 public:
     std::atomic< long > label;
 
+    // TODO: Something like this to track start node for the thresholded comparison.
+    //LabeledNode<Data>* regionsFirstNode;
+
     volatile bool isReady;
     //std::condition_variable var;
 
@@ -125,6 +128,14 @@ public:
     LabeledNode( Data&& _data, long _label = 0, bool _ready = true )
         : data( std::move( _data ) ), label( _label ), isReady( _ready )
     {}
+
+    /*! Returns the const reference to data value of this node.
+     *  - Assumes that this node's object will be alive longer than the 
+     *    reference will be used.
+     */ 
+    const Data& getData() const {
+        return data;
+    }
 };
 
 
@@ -135,20 +146,26 @@ protected:
     const std::vector< size_t > dimensions;
     const std::vector< size_t > coords;
 
+    bool checkValidity(){
+        assert( dimesions.size() == coords.size() );
+        for( size_t i = 0; i < coords.size(); i++ ){
+            assert( coords[ i ] < dimensions[ i ] );
+        }
+    }
+
 public:
     /*! Copy and move constructors.
      * @param matrix - reference to an existing vector of elements
      */ 
     MatrixGraphTraverser( std::vector< Element >& _matrix, 
                           const std::vector<size_t>& _dimensions,
-                          const std::vector< size_t > coords,
-                          size_t _index )
-        : matrix( _matrix ), dimensions( _dimensions ), index( _index )
+                          const std::vector<size_t>& coords )
+        : matrix( _matrix ), dimensions( _dimensions ), coords
     { assert( index < matrix.size() ); }
 
     MatrixGraphTraverser( std::vector< Element >& _matrix, 
                           std::vector<size_t>&& _dimensions,
-                          size_t _index )
+                          std::vector<size_t>&& coords )
         : matrix( _matrix ), dimensions( std::move( _dimensions ) ), index( _index )
     { assert( index < matrix.size() ); } 
 
@@ -170,14 +187,17 @@ private:
     
 
 public:
-    ConnectedComponentLabeler( size_t threadCount, Container<Data> data, NeighborGetter gets ){
-
-    }
+    ConnectedComponentLabeler( size_t threadCount,  
+                               std::vector< LabeledNode< Data > > data, 
+                               NeighborGetter neighGet )
+    { }
 };
+
+
 
 template< class Data >
 void labelStructure( ConnectedComponentLabeler& globalData, 
-                     MatrixGraphTraverser< LabeledNode<Data> > startNode, 
+                     MatrixGraphTraverser< LabeledNode<Data> > currNode, 
                      Data threshold, size_t scannedNodeCount )
 {
     // Vector for storing neighbors of current element.
@@ -188,9 +208,10 @@ void labelStructure( ConnectedComponentLabeler& globalData,
     std::vector< long > similarLabels;
     similarLabels.reserve( 8 );
 
-    // The traverser which we'll use for traversing consequent elements.
-    MatrixGraphTraverser< LabeledNode<Data> > currNode = startNode; 
+    // TODO: Track the current sector and use it's start value to manage thresholds.
+    //const Data& startData = currNode.getValue().getData();
 
+    // The traverser which we'll use for traversing consequent elements - currNode.
     for( size_t i = 0; i < scannedNodeCount; i++ ){
         // If label's already set, go to the next element.
         if( currNode.getValue().label.get() != 0 ) 
@@ -206,7 +227,7 @@ void labelStructure( ConnectedComponentLabeler& globalData,
         // Check all neigbors. If we find one similar to ours, do labeling.
         long ourLabel = 0;
         for( auto&& n : neighs ){
-            if( n.getData().isSimilar( startNode.getData(), threshold ) ){
+            if( n.getData().isSimilar( startData, threshold ) ){
                 long theirLabel = n.label.get();
 
                 // If the element already has a label, assign it's label to us.
