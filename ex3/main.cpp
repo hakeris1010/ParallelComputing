@@ -173,16 +173,32 @@ struct Pixel{
 
 
 template< class Data >
-void labelStructure( MatrixGraphTraverser< LabeledNode<Data> > startNode, Data threshold, size_t scannedNodeCount ){
+void labelStructure( const std::shared_ptr< LabelData > globalData, 
+                     MatrixGraphTraverser< LabeledNode<Data> > startNode, 
+                     Data threshold, size_t scannedNodeCount )
+{
+    std::vector< const LabelledNode<Data>& > neighs;
     neighs.reserve( 8 );
 
     MatrixGraphTraverser< LabeledNode<Data> > currNode = startNode; 
 
     for( size_t i = 0; i < scannedNodeCount; i++ ){
-        std::vector< const LabelledNode<Data>& > neighs;
+        if( currNode.getValue().label.get() == 0 ) 
+            continue;
 
-        currNode.getNeighbors( neighs, threshold );
-        if( neighs.size() > 0
+        neighs.clear();
+        currNode.getNeighbors( neighs );
+
+        size_t label = globalData.nextLabel();
+        for( auto&& n : neighs ){
+            if( n.getData().isSimilar( startNode.getData(), threshold ) ){
+                if
+            }
+        }
+
+        if( neighs.size() > 0 ){
+
+        }
     }
 }
 
