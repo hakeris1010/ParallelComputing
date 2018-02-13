@@ -68,32 +68,15 @@ public:
 };
 
 
-template<class Element, typename Neighborhood>
-class VectorNode : public LabeledNodeBase<Element>{
-private:
-    const std::vector< VectorNode >& container;
-    const size_t index;
-
-    const std::function< void( const std::vector< Element >&, size_t, 
-                   std::vector< LabeledNodeBase<Element>* >& > neighFinder;
-
-public:
-    VectorNode( std::vector< Element >& cont, size_t ind, const Neighborhood lambda,
-                long _label = 0, bool _ready = true ) : 
-        container( cont ), index( ind ), LabeledNodeBase<Element>( _label, _ready )
-    { assert( index <= container.size() ); }
-
-    int getNeigbors( std::vector< LabeledNodeBase<Element>* >& neighs ) const = 0;
-
-    const Element& getData() const {
-        return container[ index ];
-    }
-};
-
-
-// Structure to store node's data.
+/*! Structure to store labeled node's data.
+ *  - Vector of these objects is allocated at the beginning of the job.
+ *    It's a long-term memory allocation. Usually on the heap.
+ *  - However to turn this vector into a graph we use traversing object,
+ *    which is allocated on the stack at each iteration, and not kept in memory
+ *    for long.
+ */ 
 template<class Data>
-struct SimpleLabeledNode{
+struct LabeledNode{
 private:
     Data data;
 
@@ -114,28 +97,47 @@ public:
 };
 
 template< class Element >
-class MatrixGraphTraverserConst{
-private:
+class MatrixGraphTraverser{
+protected:
     const std::vector< Element >& matrix;
     const std::vector< size_t > dimensions;
+    const size_t index;
 
 public:
     /*! Copy and move constructors.
      * @param matrix - reference to an existing vector of elements
      */ 
-    MatrixGraphTraverser( std::vector< Element >& matrix, 
-                          const std::vector<size_t>& dimensions )
-        : matrix( _matrix ), dimensions( _dimensions )
-    {}
+    MatrixGraphTraverser( std::vector< Element >& _matrix, 
+                          const std::vector<size_t>& _dimensions,
+                          size_t _index )
+        : matrix( _matrix ), dimensions( _dimensions ), index( _index )
+    { assert( index < matrix.size() ); }
 
-    MatrixGraphTraverser( std::vector< Element >& matrix, 
-                          std::vector<size_t>&& dimensions )
-        : matrix( _matrix ), dimensions( std::move( _dimensions ) )
-    {} 
+    MatrixGraphTraverser( std::vector< Element >& _matrix, 
+                          std::vector<size_t>&& _dimensions,
+                          size_t _index )
+        : matrix( _matrix ), dimensions( std::move( _dimensions ) ), index( _index )
+    { assert( index < matrix.size() ); } 
 
-}
+    // Returns a Reference to object at this traverser's index.
+    Element& getValue() const {
+        return matrix[ index ];
+    }
 
+    virtual bool getNeighbors( std::vector< Element& >& neighs ) const = 0;
+};
 
+template< class Element >
+class MatrixGraphTraverser4Connection : public MatrixGraphTraverser<Element> {
+public:
+    using MatrixGraphTraverser<Element>::MatrixGraphTraverser;
+
+    bool getNeighbors( std::vector< Element& >& neighs ) const {
+        for( auto dim : this->dimensions ){
+            
+        }
+    }
+};
 
 struct Pixel{
     char red;
@@ -166,35 +168,49 @@ struct Pixel{
     }
 };
 
-/*
-void foo( size_t count ){
-    // Memory used less than 100 MB.
-    assert( count * ( sizeof( std::shared_ptr< GraphNode<int> > ) + 
-                      sizeof( GraphNode<int> ) ) < 100000000 );
+/*void oneDimVector( std::vector<size_t> dimensions, size_t repeats ){
+    // Set size of the matrix vector and coordinates of the element to be
+    // accessed each time.
+    size_t size = 1;
+    std::vector<size_t> coords( dimensions.size() );
 
-    std::vector< std::shared_ptr< GraphNode<int> > > nodes( count );
+    for( size_t i = 0; i < dimensions.size(); i++ ){
+        size *= dimensions[i];
 
-    for( size_t i=0; i < count; i++ ){
-        int d = 0;
-        nodes.push_back( std::shared_ptr< GraphNode<int> >( new GraphNode<int>( d, {} ) ) );
+        // We'll be accessing the central element.
+        coords[i] = dimensions[i] / 2;
+    }
+
+    // N-dimensional matrix vector.
+    std::vector<int> vect( size, 5 );
+
+    // Access the element in N-dim vector.
+    // Example 3D coordinates:
+    // (x,y,z) = (1, 2, 3). 
+    // - (Counting from 0).
+    //
+    // coord = X*Y*(z) + X*(y) + x;
+    // - X, Y and Z are the dimensions of a hypercube.
+    //
+    for( size_t i = 0; i < repeats; i++ ){
+        size_t index = 1;
+        for( size_t i = 0; i < dimensions.size(); i++ ){
+            index = coords[i]* 
+        }
+    }
+} */
+
+void oneDimVector( size_t wid, size_t hei, size_t repeats ){
+    // 2-dimensional matrix vector.
+    std::vector<int> vect( wid*hei, 5 );
+    size_t x = wid/2;
+    size_t y = hei/2;
+
+    // Access the element "repeats" times.
+    for( size_t i = 0; i < repeats; i++ ){
+        size_t index = y*wid
     }
 }
-
-void foo2( size_t count ){
-    // Memory used less than 100 MB.
-    assert( count * sizeof( GraphNode<int> ) < 100000000 ); 
-
-    int a = 0;
-    GraphNode<int> root( a, {} );
-    GraphNode<int>* tmp = &root;
-
-    for( size_t i = 0; i < count; i++ )
-    {
-        tmp->neighbors.push_back( std::shared_ptr< GraphNode<int> >( new GraphNode<int>( a, {} ) ) );
-        tmp = (tmp->neighbors[0]).get(); 
-    }
-}
-*/
 
 int main(){
     size_t count = 100000;
