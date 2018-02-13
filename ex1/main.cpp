@@ -17,23 +17,35 @@ size_t threadCount = 20;
 
 struct MutexedString{
     std::mutex mut;
-    std::string str;
+    char str[ 8192 ];
+
+    const char* end = str + sizeof(str);
+    char* ptr = str;
+
+    void append( const std::string& data ){
+        for( auto c : data ){
+            if( ptr >= end )
+                return;
+            *(ptr++) = c;
+        }
+        *ptr = '\0';
+    }
 };
 
 /*! Critical Section occurs in this function, which prints
  *  "Hello World!" in 4 stages.  
  */
 void printHelloWorld( std::shared_ptr<MutexedString> mts ){
-    mts->str.append("Hello ");
+    mts->append("Hello ");
     std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
 
-    mts->str.append("World ");
+    mts->append("World ");
     std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
 
-    mts->str.append("! ");
+    mts->append("! ");
     std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
 
-    mts->str.append("\n");
+    mts->append("\n");
     std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
 }
 

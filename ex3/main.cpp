@@ -78,7 +78,7 @@ public:
 template<class Data>
 struct LabeledNode{
 private:
-    Data data;
+    const Data data;
 
 public:
     std::atomic< long > label;
@@ -101,7 +101,7 @@ class MatrixGraphTraverser{
 protected:
     const std::vector< Element >& matrix;
     const std::vector< size_t > dimensions;
-    const size_t index;
+    const std::vector< size_t > coords;
 
 public:
     /*! Copy and move constructors.
@@ -109,6 +109,7 @@ public:
      */ 
     MatrixGraphTraverser( std::vector< Element >& _matrix, 
                           const std::vector<size_t>& _dimensions,
+                          const std::vector< size_t > coords,
                           size_t _index )
         : matrix( _matrix ), dimensions( _dimensions ), index( _index )
     { assert( index < matrix.size() ); }
@@ -171,6 +172,19 @@ struct Pixel{
 };
 
 
+template< class Data >
+void labelStructure( MatrixGraphTraverser< LabeledNode<Data> > startNode, Data threshold, size_t scannedNodeCount ){
+    neighs.reserve( 8 );
+
+    MatrixGraphTraverser< LabeledNode<Data> > currNode = startNode; 
+
+    for( size_t i = 0; i < scannedNodeCount; i++ ){
+        std::vector< const LabelledNode<Data>& > neighs;
+
+        currNode.getNeighbors( neighs, threshold );
+        if( neighs.size() > 0
+    }
+}
 
 
 
