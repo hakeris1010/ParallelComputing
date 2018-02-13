@@ -67,6 +67,37 @@ public:
     }
 };
 
+struct Pixel{
+    char red;
+    char green;
+    char blue;
+    char alpha;
+
+    Pixel( char r, char g, char b, char a = 0xFF )
+        : red( r ), green( g ), blue( b ), alpha( a )
+    {}
+
+    Pixel( int32_t val )
+        : red( (char)(val >> 24) ), green( (char)(val >> 16) ), 
+          blue( (char)(val >> 8) ), alpha( (char)(val >> 0) )
+    {}
+
+    bool operator==( const Pixel& p ){
+        //return red == p.red && green == p.green && blue == p.blue && alpha == p.alpha;
+        return *((uint32_t*) &red) == *((uint32_t*) &(p.red));
+    }
+
+    bool operator<( const Pixel& p ){
+        //return red < p.red || green < p.green || blue < p.blue || alpha < p.alpha;
+        return *((uint32_t*) &red) < *((uint32_t*) &(p.red));
+    }
+
+    bool isSimilar( const Pixel& p, char thr ){
+        return abs(red - p.red) <= thr   && abs(green - p.green) <= thr && 
+               abs(blue - p.blue) <= thr && abs(alpha - p.alpha) <= thr;
+    }
+};
+
 
 /*! Structure to store labeled node's data.
  *  - Vector of these objects is allocated at the beginning of the job.
@@ -78,13 +109,13 @@ public:
 template<class Data>
 struct LabeledNode{
 private:
-    const Data data;
+    Data data;
 
 public:
     std::atomic< long > label;
 
     volatile bool isReady;
-    std::condition_variable var;
+    //std::condition_variable var;
 
     // Copy and move constructors.
     LabeledNode( const Data& _data, long _label = 0, bool _ready = true )
@@ -95,6 +126,7 @@ public:
         : data( std::move( _data ) ), label( _label ), isReady( _ready )
     {}
 };
+
 
 template< class Element >
 class MatrixGraphTraverser{
@@ -128,76 +160,75 @@ public:
     virtual bool getNeighbors( std::vector< Element& >& neighs ) const = 0;
 };
 
-template< class Element >
-class MatrixGraphTraverser4Connection : public MatrixGraphTraverser<Element> {
+constexpr auto 2D_4Connection_Vector< Element,  = [ std::vector< Element& >& neighs ]( 
+
+/*! Class used for multithreaded component labeling.
+ */ 
+template< class Data, typename NeigborGetter = decltype( 2D_4Connection_Vector ) >
+class ConnectedComponentLabeler {
+private:
+    
+
 public:
-    using MatrixGraphTraverser<Element>::MatrixGraphTraverser;
+    ConnectedComponentLabeler( size_t threadCount, Container<Data> data, NeighborGetter gets ){
 
-    bool getNeighbors( std::vector< Element& >& neighs ) const {
-        for( auto dim : this->dimensions ){
-            
-        }
     }
 };
-
-struct Pixel{
-    char red;
-    char green;
-    char blue;
-    char alpha;
-
-    Pixel( char r, char g, char b, char a = 0xFF )
-        : red( r ), green( g ), blue( b ), alpha( a )
-    {}
-
-    Pixel( int32_t val )
-        : red( (char)(val >> 24) ), green( (char)(val >> 16) ), 
-          blue( (char)(val >> 8) ), alpha( (char)(val >> 0) )
-    {}
-
-    bool operator==( const Pixel& p ){
-        //return red == p.red && green == p.green && blue == p.blue && alpha == p.alpha;
-        return *((uint32_t*) &red) == *((uint32_t*) &(p.red));
-    }
-
-    bool operator<( const Pixel& p ){
-        //return red < p.red || green < p.green || blue < p.blue || alpha < p.alpha;
-        return *((uint32_t*) &red) < *((uint32_t*) &(p.red));
-    }
-
-    bool isSimilar( const Pixel& p, char thr ){
-        return abs(red - p.red) <= thr   && abs(green - p.green) <= thr && 
-               abs(blue - p.blue) <= thr && abs(alpha - p.alpha) <= thr;
-    }
-};
-
 
 template< class Data >
-void labelStructure( const std::shared_ptr< LabelData > globalData, 
+void labelStructure( ConnectedComponentLabeler& globalData, 
                      MatrixGraphTraverser< LabeledNode<Data> > startNode, 
                      Data threshold, size_t scannedNodeCount )
 {
-    std::vector< const LabelledNode<Data>& > neighs;
+    // Vector for storing neighbors of current element.
+    std::vector< LabelledNode<Data>& > neighs;
     neighs.reserve( 8 );
 
+    // Storing the labels of the neighbors which are similar compared to current element.
+    std::vector< long > similarLabels;
+    similarLabels.reserve( 8 );
+
+    // The traverser which we'll use for traversing consequent elements.
     MatrixGraphTraverser< LabeledNode<Data> > currNode = startNode; 
 
     for( size_t i = 0; i < scannedNodeCount; i++ ){
-        if( currNode.getValue().label.get() == 0 ) 
+        // If label's already set, go to the next element.
+        if( currNode.getValue().label.get() != 0 ) 
             continue;
 
+        // Label is not set. Get neighbors.
         neighs.clear();
-        currNode.getNeighbors( neighs );
+        similarLabels.clear();
 
-        size_t label = globalData.nextLabel();
+        // Get neighbors (const version - for thr34d s4f3ty).
+        currNode.getNeighborElementsConst( neighs );
+
+        // Check all neigbors. If we find one similar to ours, do labeling.
+        long ourLabel = 0;
         for( auto&& n : neighs ){
             if( n.getData().isSimilar( startNode.getData(), threshold ) ){
-                if
+                long theirLabel = n.label.get();
+
+                // If the element already has a label, assign it's label to us.
+                if( !ourLabel && theirLabel ){
+                    ourLabel = theirLabel;
+                }
+
+                similarLabels.push_back( theirLabel );
             }
         }
 
-        if( neighs.size() > 0 ){
+        // If no available labels found (no similar neighbors ), assign a new label.
+        if( !ourLabel )
+            ourLabel = globalData->acquireNewLabel();
 
+        // Set it to our element.
+        currNode.getValue.label.set( ourLabel );
+
+        // Create a new similarity list if we've encountered different similar labels.
+        if( similarLabels.size() > 1 ){
+            // Call new similarity create function, which fixes stuff and does what's needed.
+            globalData->createNewSimilarity_Checked( ourLabel, similarLabels );
         }
     }
 }
