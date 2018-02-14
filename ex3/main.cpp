@@ -142,8 +142,13 @@ public:
  *  interpreting it as a graph, with custom neighbor getting function.
  *  - Is not thread safe. Must be assured that only one thread is manipulating 
  *    the traverser.
+ *  @param NeighborGetter is a function of type:
+ *      std::vector< size_t > neighborGetter( size_t currIndex, 
+ *                                            const std::vector< size >& currCoords )
+ *      - Returns already computed indexes of all neighbors, based on coordinates of 
+ *        current element.
  */ 
-template< class Element >
+template< class Element, class NeigborGetter >
 class MatrixGraphTraverser{
 protected:
     const std::vector< Element >& matrix;
@@ -153,7 +158,7 @@ protected:
 
     // Function receiving coordinates of current element, and returning indexes of
     // neighboring elements. The indexes are computed autonomously.
-    std::function< void( const std::vector<size_t>&, std::vector<size_t>& ) getNeighIndex;
+    NeighborGetter getNeighborIndexes;
 
     bool checkValidity(){
         assert( dimensions.size() == coords.size() );
@@ -162,17 +167,21 @@ protected:
         }
     }
 
+public:
     /*! Compute index of the element in N-dim vector.
      * Example 3D coordinates:
      * (x,y,z) = (1, 2, 3). 
      * - (Counting from 0).
      *
      * coord = X*Y*(z) + X*(y) + x;
-     *
      * - X, Y and Z are the dimensions of a hypercube vector.
+     *
+     * @param mg - the traverser object with already set coords and dimensions.
      */ 
-    size_t getIndexFromCoords(){
-        index = 0;
+    static size_t getIndexFromCoords( const std::vector< size_t >& coords,
+                                      const std::vector< size_t >& dimensions )
+    {
+        size_t index = 0;
         for( size_t i = coords.size() - 1; i >= 0; i-- ){
             size_t tmp = 1;
             for( size_t j = 0; j < i; j++ ){
@@ -193,40 +202,57 @@ protected:
      * 2. The coord Z: coordZ = indZ / baseZ = 26 / 24 = 1.
      * 3. Index in the next base (Y): indY = 26 % 24 = 2.
      * Repeat. 
+     *
+     * @param mg - the traverser object with already set dimensions and index.
      */ 
-    void getCoordsFromIndex( size_t ind ){
-        coords.assign( dimensions.size() );
+    static std::vector< size_t > getCoordsFromIndex( size_t ind, 
+        const std::vector< size_t >& dimensions )
+    {
+        std::vector< size_t > coords( dimensions.size() );
 
         for( size_t i = coords.size() - 1; i >= 0; i-- ){
             // Compute the base of coordinate i.
             size_t base = 1;
             for( size_t j = 0; j < i; j++ ){
-                base *= dimensions[ j ];
+                base *= mg.dimensions[ j ];
             }
 
             // Compute coords and index in the next base.            
             coords[ i ] = ind / tmp;
             ind = ind % base;
         } 
+
+        return coords;
     }
 
-public:
     /*! Copy and move constructors.
+     *
      * @param matrix - reference to an existing vector of elements
+     * TODO: Construct missing elements (coords or index).
      */ 
     MatrixGraphTraverser( std::vector< Element >& _matrix, 
                           const std::vector<size_t>& _dimensions,
-                          const std::vector<size_t>& _coords )
-        : matrix( _matrix ), dimensions( _dimensions ), coords( _coords )
-    { getIndexFromCoords(); }
+                          size_t _index,
+                          std::vector<size_t>&& _coords = std::vector<size_t>(),
+                          NeighborGetter neighGet = defaultNeighGetter )
+        : matrix( _matrix ), dimensions( _dimensions ), coords( std::move( _coords ) ),
+          index( _index ), getNeighborIndexes( neighGet )
+    {}
+    //{ getIndexFromCoords(); }
     //{ checkValidity(); }
 
     MatrixGraphTraverser( std::vector< Element >& _matrix, 
                           std::vector<size_t>&& _dimensions,
-                          std::vector<size_t>&& _coords )
+                          size_t _index,
+                          std::vector<size_t>&& _coords = std::vector<size_t>(),
+                          NeighborGetter neighGet = defaultNeighGetter )
         : matrix( _matrix ), dimensions( std::move( _dimensions ) ), 
-          coords( std::move( _coords ) )
-    { getIndexFromCoords(); } 
+          coords( std::move( _coords ) ), index( _index ), 
+          getNeighborIndexes( neighGet )
+    {}
+
+    // Force move constructor.
+    MatrixGraphTraverser( MatrixGraphTraverser< Element, NeigborGetter >&& ) = default; 
 
     // Returns a Reference to object at this traverser's index.
     Element& getValue() const {
@@ -239,13 +265,42 @@ public:
 
     virtual std::vector< MatrixGraphTraverser > getNeighborTraversers() const = 0;*/
 
-    virtual bool getNeighborElements( std::vector< Element& >& vec ) const = 0;
-    virtual bool getNeighborElementsConst( std::vector< const Element& >& vec ) const = 0;
+    void getNeighborElements( std::vector< Element& >& vec ) const {
+        std::vector< size_t > neighInds = getNeighborIndexes( index, coords );
+        for( size_t i : neighInds ){
+            // Push a Reference to an element to a vector.
+            if( i < matrix.size() )
+                vec.push_back( matrix[ i ] );
+        }
+    }
 
-    virtual bool getNeighborTraversers( std::vector< MatrixGraphTraverser >& vec ) const = 0; 
+    void getNeighborElementsConst( std::vector< const Element& >& vec ) const {
+        std::vector< size_t > neighInds = getNeighborIndexes( index, coords );
+        for( size_t i : neighInds ){
+            // Push a Const Reference to an element to a vector.
+            if( i < matrix.size() )
+                vec.push_back( (const Element&)( matrix[ i ] ) );
+        }
+    }
+
+    void getNeighborTraversers( std::vector< MatrixGraphTraverser >& vec ) const {
+        std::vector< size_t > neighInds = getNeighborIndexes( index, coords );
+        for( size_t i : neighInds ){
+            // Create a Traverser, and push it to the thing.
+            if( i < matrix.size() ){
+                vec.push_back( MatrixGraphTraverser< Element, NeigborGetter >(
+                    matrix,
+                    dimensions,
+                    index,
+                    getCoordsFromIndex( i, dimensions ),
+                    getNeighborIndexes
+                ) );
+            }
+        }
+    }
+
 };
 
-constexpr auto 2D_4Connection_Vector< Element,  = [ std::vector< Element& >& neighs ]( 
 
 /*! Class used for multithreaded component labeling.
  */ 
