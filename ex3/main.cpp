@@ -138,19 +138,76 @@ public:
     }
 };
 
-
+/*! Structure for traversing the N-Dimensional Array/vector, 
+ *  interpreting it as a graph, with custom neighbor getting function.
+ *  - Is not thread safe. Must be assured that only one thread is manipulating 
+ *    the traverser.
+ */ 
 template< class Element >
 class MatrixGraphTraverser{
 protected:
     const std::vector< Element >& matrix;
-    const std::vector< size_t > dimensions;
-    const std::vector< size_t > coords;
+    std::vector< size_t > dimensions;
+    std::vector< size_t > coords;
+    size_t index;
+
+    // Function receiving coordinates of current element, and returning indexes of
+    // neighboring elements. The indexes are computed autonomously.
+    std::function< void( const std::vector<size_t>&, std::vector<size_t>& ) getNeighIndex;
 
     bool checkValidity(){
-        assert( dimesions.size() == coords.size() );
+        assert( dimensions.size() == coords.size() );
         for( size_t i = 0; i < coords.size(); i++ ){
             assert( coords[ i ] < dimensions[ i ] );
         }
+    }
+
+    /*! Compute index of the element in N-dim vector.
+     * Example 3D coordinates:
+     * (x,y,z) = (1, 2, 3). 
+     * - (Counting from 0).
+     *
+     * coord = X*Y*(z) + X*(y) + x;
+     *
+     * - X, Y and Z are the dimensions of a hypercube vector.
+     */ 
+    size_t getIndexFromCoords(){
+        index = 0;
+        for( size_t i = coords.size() - 1; i >= 0; i-- ){
+            size_t tmp = 1;
+            for( size_t j = 0; j < i; j++ ){
+                tmp *= dimensions[ j ];
+            }
+            tmp *= coords[ i ];
+
+            index += tmp;
+        }
+        return index;
+    }
+
+    /*! Compute index in the N-dim vector from given coordinates.
+     * The coordinate 'i' is equal to index in the base 'i', divided by the base.
+     * E.G. array dims: 8x3x3
+     *      Index: 26.
+     * 1. Base for coord. Z: baseZ = X*Y = 8*3 = 24.
+     * 2. The coord Z: coordZ = indZ / baseZ = 26 / 24 = 1.
+     * 3. Index in the next base (Y): indY = 26 % 24 = 2.
+     * Repeat. 
+     */ 
+    void getCoordsFromIndex( size_t ind ){
+        coords.assign( dimensions.size() );
+
+        for( size_t i = coords.size() - 1; i >= 0; i-- ){
+            // Compute the base of coordinate i.
+            size_t base = 1;
+            for( size_t j = 0; j < i; j++ ){
+                base *= dimensions[ j ];
+            }
+
+            // Compute coords and index in the next base.            
+            coords[ i ] = ind / tmp;
+            ind = ind % base;
+        } 
     }
 
 public:
@@ -159,22 +216,33 @@ public:
      */ 
     MatrixGraphTraverser( std::vector< Element >& _matrix, 
                           const std::vector<size_t>& _dimensions,
-                          const std::vector<size_t>& coords )
-        : matrix( _matrix ), dimensions( _dimensions ), coords
-    { assert( index < matrix.size() ); }
+                          const std::vector<size_t>& _coords )
+        : matrix( _matrix ), dimensions( _dimensions ), coords( _coords )
+    { getIndexFromCoords(); }
+    //{ checkValidity(); }
 
     MatrixGraphTraverser( std::vector< Element >& _matrix, 
                           std::vector<size_t>&& _dimensions,
-                          std::vector<size_t>&& coords )
-        : matrix( _matrix ), dimensions( std::move( _dimensions ) ), index( _index )
-    { assert( index < matrix.size() ); } 
+                          std::vector<size_t>&& _coords )
+        : matrix( _matrix ), dimensions( std::move( _dimensions ) ), 
+          coords( std::move( _coords ) )
+    { getIndexFromCoords(); } 
 
     // Returns a Reference to object at this traverser's index.
     Element& getValue() const {
         return matrix[ index ];
     }
 
-    virtual bool getNeighbors( std::vector< Element& >& neighs ) const = 0;
+    // Use Copy Elision feature of C++11 and newer versions to avoid copies.
+    /*virtual std::vector< Element& > getNeighborElements() const = 0;
+    virtual std::vector< const Element& > getNeighborElementsConst() const = 0;
+
+    virtual std::vector< MatrixGraphTraverser > getNeighborTraversers() const = 0;*/
+
+    virtual bool getNeighborElements( std::vector< Element& >& vec ) const = 0;
+    virtual bool getNeighborElementsConst( std::vector< const Element& >& vec ) const = 0;
+
+    virtual bool getNeighborTraversers( std::vector< MatrixGraphTraverser >& vec ) const = 0; 
 };
 
 constexpr auto 2D_4Connection_Vector< Element,  = [ std::vector< Element& >& neighs ]( 
@@ -184,7 +252,17 @@ constexpr auto 2D_4Connection_Vector< Element,  = [ std::vector< Element& >& nei
 template< class Data, typename NeigborGetter = decltype( 2D_4Connection_Vector ) >
 class ConnectedComponentLabeler {
 private:
-    
+    // The reference values for every label.
+    std::map< long, const Data& > labelDataValues;
+
+    // Every label's equal label vector reference
+    std::map< long, std::vector< long >& > equalityMap;
+
+    // Equality storage - the labels which are equal.
+    std::vector< std::vector< long > > equalities;
+
+    // Protect the state.
+    std::mutex mut;
 
 public:
     ConnectedComponentLabeler( size_t threadCount,  
@@ -192,7 +270,6 @@ public:
                                NeighborGetter neighGet )
     { }
 };
-
 
 
 template< class Data >
