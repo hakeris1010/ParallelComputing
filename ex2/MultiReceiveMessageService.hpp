@@ -1,5 +1,5 @@
-#ifndef BARRIER_MESSAGE_SERVICE_HPP_INCLUDED
-#define BARRIER_MESSAGE_SERVICE_HPP_INCLUDED
+#ifndef MULTIRECEIVE_MESSAGE_SERVICE_HPP_INCLUDED
+#define MULTIRECEIVE_MESSAGE_SERVICE_HPP_INCLUDED
 
 #include <iostream>
 #include <thread>
@@ -13,13 +13,13 @@
 #include <functional>
 #include "MessageService.hpp"
 
-/*! Barrier-specific ThreadState
+/*! Multi-receiver async reading-ready state.
+ *  - Includes a position in an input sequence.
  */ 
-struct BarrierThreadState : public ThreadState{
+struct MultiReceiverThreadState : public ThreadState {
     using ThreadState::ThreadState;
-    volatile bool pollAvailable = true;
+    size_t currPos;
 };
-
 
 /*! TODO (NO LONGER): 
  * - CONFIRMED that this approach is not optimal because of limited usability and
@@ -31,29 +31,43 @@ struct BarrierThreadState : public ThreadState{
  *   must wait, or is no longer allowed to poll at all.  
  */ 
 template<class MessType>
-class BarrierMessageService : public MessageService<MessType>{
+class MultiReceiverMessageService : public MessageService<MessType>{
 private:
+    // Option control properties.
+    const int verb;
+    const bool overwriteOldest;
+
+    // Message buffer and properties.
     std::vector< MessType > ringBuffer;
-    size_t readPos = 0;
     size_t writePos = 0;
+    size_t lastElemPos = 0;
     size_t itemCount = 0;
 
+    // "Dispacther is dead" property.
     volatile bool dispatcherClosed = false;
-    volatile bool resetNeeded = false;
-    int verb = 0;
 
-    std::mutex mut;
+    // Container for receiver thread states (position in buffer, etc.).
+    std::set< std::shared_ptr<MultiReceiverThreadState>, decltype(compareLambda) > threadStates;
+
+    // How many threads haven't yet read the oldest element.
+    size_t lastElemRemainingReaders = 0;
+
+    // Synchronizing variables. Protecc's several stuff.
+    // Protects the message buffer and properties which are written at every call.
+    std::mutex mut_BufferAndClass;
+
+    // Protects thread state set, which is modified rarely.
+    std::mutex mut_ThreadStates;
+
+    // Condvar on which we wait when there are no elems remaining.
     std::condition_variable cond;
 
-    std::set< std::shared_ptr<BarrierThreadState>, decltype(compareLambda) > receiverThreads;
-    size_t pollableThreads = 0;
-
-    /*! These private functions assume lock is already acquired.
+    /*! These private functions assume that LOCK is ALREADY ACQUIRED.
      * - Returns an iterator to std::shared_ptr to threadState object with id = id.
      *  @param id - Thread's ID.
      */ 
     auto findReceiverThread( std::thread::id id ){
-        return receiverThreads.find( std::make_shared< BarrierThreadState >( id ) );
+        return receiverThreads.find( std::make_shared< MultiReceiverThreadState >( id ) );
     }
 
     /*! ======== Synchronized Barrier Service functions. ==========  
@@ -82,7 +96,7 @@ private:
         return pollableThreads;
     }
 
-    void setPollAvailable( std::shared_ptr< BarrierThreadState > ts, bool val ){
+    void setPollAvailable( std::shared_ptr< MultiReceiverThreadState > ts, bool val ){
         if( (ts->pollAvailable) && !val )
             pollableThreads--;
         else if( !(ts->pollAvailable) && val )
@@ -98,11 +112,13 @@ public:
     /*! Constructor. 
      *  - Creates initial buffer.
      */  
-    BarrierMessageService( size_t buffSize = DEFAULT_BUFFSIZE, 
+    MultiReceiverMessageService( size_t buffSize = DEFAULT_BUFFSIZE, 
+                    bool _overwriteOldest = true,
                     std::initializer_list<MessType>&& initialMess = {},
                     int _verbosity = DEFAULT_VERBOSITY )
-    : ringBuffer( initialMess ), writePos( initialMess.size() ), 
-      itemCount( initialMess.size() ), verb( _verbosity ),
+    : verb( _verbosity ), overwriteOldest( _overwriteOldest ),
+      ringBuffer( initialMess ), writePos( initialMess.size() ), 
+      itemCount( initialMess.size() ), 
       receiverThreads( compareLambda )
     {
         if( ringBuffer.size() < buffSize ){
@@ -113,18 +129,26 @@ public:
         }
     }
 
-    BarrierMessageService( const BarrierMessageService& ) = delete;
-    BarrierMessageService& operator=( const BarrierMessageService& ) = delete;
+    MultiReceiverMessageService( const MultiReceiverMessageService& ) = delete;
+    MultiReceiverMessageService& operator=( const MultiReceiverMessageService& ) = delete;
 
     /*! Dispatches new message - pushes it to the ring buffer queue.
      *  - Notifies all waiters to check whether they can accept the message.
      */ 
     void dispatchMessage( MessType&& mess ){
-        // Lock the critical section - adding a new message to queue.
+        // Lock the commonly-written Class and Buffer mutex - adding a new message to queue.
         {
-            std::lock_guard< std::mutex > lock( mut );
+            std::lock_guard< std::mutex > lock( mut_BufferAndClass );
             if( writePos >= ringBuffer.size() )
                 writePos = 0;
+
+            // Condition when there's no place to write to - the write pos has reached 
+            // the last elem pos.
+            if( writePos == lastElemPos ){
+                if( overwriteOldest ){
+
+                }
+            }
 
             // Move data to the position in buffer.
             ringBuffer[ writePos ] = std::move( mess );
@@ -156,7 +180,7 @@ public:
                 return false;
             }
 
-            std::shared_ptr< BarrierThreadState > threadState = *tIter;
+            std::shared_ptr< MultiReceiverThreadState > threadState = *tIter;
 
             // Check if poll is available for this thread (hasn't already polled current msg.)
             if( itemCount && threadState->pollAvailable ) 
@@ -200,7 +224,7 @@ public:
         std::lock_guard< std::mutex > lock( mut );
 
         // Create new Thread State, and increment pollable thread counter.
-        auto thState = std::make_shared<BarrierThreadState>( std::this_thread::get_id() );
+        auto thState = std::make_shared<MultiReceiverThreadState>( std::this_thread::get_id() );
         auto res = receiverThreads.insert( thState );
 
         // insert() returns std::pair, with second element indicating if new 
@@ -237,8 +261,7 @@ public:
         // To prevent DeadLocks, notify the waiters to check the condition.
         cond.notify_all();
     }
-     
 };
 
-#endif // BARRIER_MESSAGE_SERVICE_HPP_INCLUDED
+#endif // MULTIRECEIVE_MESSAGE_SERVICE_HPP_INCLUDED
 

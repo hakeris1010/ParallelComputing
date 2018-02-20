@@ -1,6 +1,10 @@
 #ifndef MESSAGE_SERVICE_INCLUDED
 #define MESSAGE_SERVICE_INCLUDED
 
+/*! Various utilities needed for project:
+ *  - Formatted conditional Logging
+ *  - Generic toString().
+ */ 
 namespace Util{
     template< typename... Args >
     void vlog( const int threshold, int verbosity, const char* str, Args&&... args ){
@@ -16,6 +20,30 @@ namespace Util{
         return str.str();
     }
 }
+
+/*! Basic ThreadState
+ */ 
+struct ThreadState{
+    std::thread::id id;
+    volatile bool isSubscribed = true;
+
+    bool operator< (const ThreadState& other) const {
+        return id < other.id;
+    }
+    bool operator== (const ThreadState& other) const {
+        return id == other.id;
+    } 
+
+    ThreadState( std::thread::id _id ) : id( _id ) {}
+};
+
+/*! Thread State comparation lambdas.
+ */ 
+constexpr auto compareLambda = 
+    []( const std::shared_ptr<ThreadState>& item1, 
+        const std::shared_ptr<ThreadState>& item2 ) -> bool
+    { return (*item1) < (*item2); }; 
+
 
 /*! Message dispatching/receiving service, created for multithreaded applications.
  *  - Some implementations Uses Thread IDs heavily.
