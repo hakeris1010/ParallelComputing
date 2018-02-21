@@ -87,12 +87,14 @@ private:
     }
 
     /*! Removes the oldest element from buffer, performing these jobs:
-     *  - Checks for threads which haven't yet read the oldest element, and
-     *    if there are such threads, then iterates through threadStates and moves
-     *    the currPos forward for threads which are still on oldest element position.
+     *  - Iterates through threadStates and increments currPos'es pointing to lastElemPos.
      *  - At the same time, checks for threads which are on the next elem after the last, 
      *    incrementing the lastElemRemainingReaders accordingly.
      *  - After that's done, increments the lastElemPos counter.
+     *
+     *  - If there are no elements (itemCount == 0), does nothing.
+     *  - Even if lastElemPos == writePos, it's nothing bad, because it just means buffer
+     *    is full.
      */ 
     void removeOldestMessage(){
         if( !itemCount )
@@ -111,7 +113,7 @@ private:
                 lastElemRemainingReaders++;
             }
             // Position on the next after lastElem - it's the new lastElem.
-            else if( state->currPos == lastElemPos+1 ){
+            else if( state->currPos == ((lastElemPos+1) % ringBuffer.size()) ){
                 lastElemRemainingReaders++;
             }
         }
@@ -122,6 +124,9 @@ private:
 
         Util::vlog( 2, verb, "  NEW remainingReaders: %d, lastElPos: %d, writePos: %d\n\n",
                     lastElemRemainingReaders, lastElemPos, writePos );
+
+        // Notify about removal.
+        cond_oldestElemRemoved.notify_all();
     }
 
 public:
@@ -143,6 +148,9 @@ public:
                 ringBuffer.push_back( MessType() );
             }
         }
+
+        Util::vlog( 1, verb, "[MultiReceiverMessageService constructor]: BuffSize: %d\n",
+                    ringBuffer.size() );
     }
 
     MultiReceiverMessageService( const MultiReceiverMessageService& ) = delete;
@@ -259,11 +267,10 @@ public:
 
         // Check if we've just read an oldest message, and perform jobs if so.
         if( oldCurpos == lastElemPos ){
-            if( lastElemRemainingReaders > 0 )
+            if( lastElemRemainingReaders > 1 )
                 lastElemRemainingReaders--;
-            
-            // If we were the last ones to read it, remove it.
-            if( !lastElemRemainingReaders ){
+            else{
+                // If we were the last ones to read it, remove the last element.
                 removeOldestMessage();
             }
         }
