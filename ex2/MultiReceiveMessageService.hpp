@@ -33,8 +33,8 @@ struct MultiReceiverThreadState : public ThreadState {
 template<class MessType>
 class MultiReceiverMessageService : public MessageService<MessType>{
 private:
-    const static size_t DEFAULT_BUFFSIZE  = 15;
-    const static int    DEFAULT_VERBOSITY = 2;
+    const static size_t DEFAULT_BUFFSIZE  = 10;
+    const static int    DEFAULT_VERBOSITY = 0;
     const static bool   DEFAULT_OVERWRITE_OLDEST = false;
 
     // Option control properties.
@@ -142,9 +142,13 @@ public:
       itemCount( initialMess.size() ), 
       receiverThreads( compareLambda )
     {
-        if( ringBuffer.size() < buffSize ){
+        if( ringBuffer.empty() ){
+            ringBuffer.assign( buffSize, MessType() );
+        }
+        else if( ringBuffer.size() < buffSize ){
             ringBuffer.reserve( buffSize );
-            for( size_t i = 0; i < (buffSize - ringBuffer.size()); i++ ){
+            // Fill the remaining place with empty elements.
+            for( size_t i = ringBuffer.size(); i < buffSize; i++ ){
                 ringBuffer.push_back( MessType() );
             }
         }
