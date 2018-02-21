@@ -49,7 +49,7 @@ void receiverRunner( std::shared_ptr< MessageReceiver<MSG> > rec, const size_t w
 void dispatcherRunner( std::shared_ptr< MessageDispatcher< std::string > > dis, 
                        size_t waitTime = 0 )
 {
-    const size_t iters = 4;
+    const size_t iters = 5;
     for( size_t i = 0; i < iters; i++ ){
         if( waitTime )
             std::this_thread::sleep_for( std::chrono::milliseconds( waitTime ) ); 
@@ -66,7 +66,7 @@ void dispatcherRunner( std::shared_ptr< MessageDispatcher< std::string > > dis,
  *  and all message receiver threads.
  */
 int main(){
-    const size_t receiverCount = 10;
+    const size_t receiverCount = 2;
 
     // Create a message communication service.
     MultiReceiverMessageService< std::string > service;

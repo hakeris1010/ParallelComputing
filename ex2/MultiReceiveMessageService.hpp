@@ -19,6 +19,7 @@
 struct MultiReceiverThreadState : public ThreadState {
     using ThreadState::ThreadState;
     size_t currPos = 0;
+    size_t roundCount = 0;
 };
 
 /*! TODO (NO LONGER): 
@@ -33,7 +34,7 @@ struct MultiReceiverThreadState : public ThreadState {
 template<class MessType>
 class MultiReceiverMessageService : public MessageService<MessType>{
 private:
-    const static size_t DEFAULT_BUFFSIZE  = 10;
+    const static size_t DEFAULT_BUFFSIZE  = 2;
     const static int    DEFAULT_VERBOSITY = 0;
     const static bool   DEFAULT_OVERWRITE_OLDEST = false;
 
@@ -47,6 +48,10 @@ private:
     // Available region end and start positions (writePos and lastElemPos)
     size_t writePos = 0;
     size_t lastElemPos = 0;
+
+    // Counts how many rounds the lastElemPos has hit the position 0 - 
+    // How many full writes have occured.
+    size_t roundCount = 0;
 
     // Indicates whether available region is splitted, i.e. latest elements are 
     // at the beginning, however there are still old elements at the end.
@@ -122,8 +127,9 @@ private:
         lastElemPos = ( lastElemPos + 1 ) % ringBuffer.size();
         itemCount--;
 
-        Util::vlog( 2, verb, "  NEW remainingReaders: %d, lastElPos: %d, writePos: %d\n\n",
-                    lastElemRemainingReaders, lastElemPos, writePos );
+        Util::vlog( 2, verb, "                   NEW remainingReaders: %d, " \
+                             "lastElPos: %d, writePos: %d, roundCount: %d\n\n",
+                    lastElemRemainingReaders, lastElemPos, writePos, roundCount );
 
         // Notify about removal.
         cond_oldestElemRemoved.notify_all();
@@ -196,8 +202,13 @@ public:
             writePos = (writePos + 1) % ringBuffer.size();
             itemCount++;
 
-            Util::vlog( 1, verb, "[dispatchMsg SUCC!]: (%p), writePos: %d, itemCount: %d\n",
-                        &ringBuffer[ writePos - 1 ], writePos, itemCount );
+            // Increment the round count if lastElemPos once again reached buffer start.
+            if( writePos == 0 )
+                roundCount++; 
+
+            Util::vlog( 1, verb, "[dispatchMsg SUCC!]: (%p), writePos: %d, " \
+                                 "itemCount: %d, roundCount:%d\n",
+                    &ringBuffer[ writePos - 1 ], writePos, itemCount, roundCount );
         }
         // Notify waiting receivers that new element has been added.
         cond_newElemAdded.notify_all();
@@ -223,8 +234,18 @@ public:
         std::shared_ptr< MultiReceiverThreadState > threadState = *tIter;
 
         // Polling starts!
-        Util::vlog( 2, verb, "[pollMsg]: Thread %s is polling.\n",
-                    Util::toString(threadID).c_str() );  
+        Util::vlog( 2, verb, "[pollMsg]: Thread %s is polling. RoundCount:%d," \
+                             " threadState->roundCount: %d\n",
+            Util::toString(threadID).c_str(), roundCount, threadState->roundCount );  
+
+        // FIXME: Check for situation when the thread is still on lastElemPos, but the 
+        // buffer is full (writePos == lastElemPos) , unable to add new elems 
+        // because the oldest one is still not read by all threads.
+        /*if( threadState->currPos == lastElemPos && lastElemPos == writePos &&
+            itemCount == ringBuffer.size() )
+        {
+            // If so, ignore the wait.
+        }*/
 
         // Wait if no elements can be read.
         // Our position (currPos) is always in these states:
@@ -236,7 +257,15 @@ public:
         //  - We only have to check for one condition: if it's EQUAL to writePos.
         //  - If it's NOT equal to WritePos, it's in the available region.
         //
-        while( ( threadState->currPos == writePos ) &&
+        //  Conditions of each line: 
+        //  1. We're on the end of buffer, no messages ahead.
+        //  2. FIXME: Buffer is NOT full (deadlock occurs if so, because writePos == lastElemPos).
+        //  3. Situation is pollable (thread still subscribed and dispatcher still working).
+        //
+        while( ( threadState->currPos == writePos ) && 
+               //FIXME:         
+              !( lastElemPos == writePos && itemCount == ringBuffer.size() &&  
+                 threadState->roundCount == roundCount ) &&
                ( threadState->isSubscribed && !dispatcherClosed ) ) 
         {
             cond_newElemAdded.wait( lock ); // Wait until new element gets added.
@@ -264,8 +293,8 @@ public:
         size_t oldCurpos = threadState->currPos;
         threadState->currPos = (threadState->currPos + 1) % ringBuffer.size();  
 
-        Util::vlog( 2, verb, " [pollMsg SUCC!]: Thread %s RECEIVED message \"%s\".\n" \
-                             "            writePos: %d, currPos: %d, itemCount: %d\n", 
+        Util::vlog( 2, verb, "[pollMsg SUCC!]: Thread %s RECEIVED message \"%s\".\n" \
+                             "                 writePos: %d, currPos: %d, itemCount: %d\n", 
                     Util::toString(threadID).c_str(), Util::toString( mess ).c_str(),
                     writePos, threadState->currPos, itemCount ); 
 
@@ -278,6 +307,9 @@ public:
                 removeOldestMessage();
             }
         }
+
+        // Synchronize RoundCount, after successfully extracted a message in current round.
+        threadState->roundCount = roundCount;
 
         return true;
     } 
@@ -295,7 +327,10 @@ public:
         // insert() returns std::pair, with second element indicating if new 
         // element was inserted to a set.
         if( res.second ){
+            // Set position in buffer and current buffer's write round count. 
             thState->currPos = lastElemPos;
+            thState->roundCount = roundCount;
+
             lastElemRemainingReaders++;
 
             Util::vlog( 2, verb, "[subscribe()]: Thread %s subscribed successfully!\n",
@@ -314,7 +349,8 @@ public:
         auto&& iter = findReceiverThread( std::this_thread::get_id() );
         if( iter != receiverThreads.end() ){
             // Decrement the "threads on last element" counter if this thread was one of them.
-            if( (*iter)->currPos == lastElemPos && lastElemRemainingReaders > 0 )
+            if( (*iter)->currPos == lastElemPos && // (*iter)->roundCount == roundCount &&
+                lastElemRemainingReaders > 0 )
                 lastElemRemainingReaders--;
 
             // Mark thread as no longer subscribed, and erase from the list.
