@@ -33,7 +33,7 @@ struct MultiReceiverThreadState : public ThreadState {
 template<class MessType>
 class MultiReceiverMessageService : public MessageService<MessType>{
 private:
-    const static size_t DEFAULT_BUFFSIZE  = 8;
+    const static size_t DEFAULT_BUFFSIZE  = 15;
     const static int    DEFAULT_VERBOSITY = 2;
     const static bool   DEFAULT_OVERWRITE_OLDEST = false;
 
@@ -185,27 +185,22 @@ public:
             itemCount++;
 
             Util::vlog( 1, verb, "[dispatchMsg SUCC!]: (%p), writePos: %d, itemCount: %d\n",
-                  &ringBuffer[ writePos - 1 ], writePos, itemCount );
+                        &ringBuffer[ writePos - 1 ], writePos, itemCount );
         }
         // Notify waiting receivers that new element has been added.
         cond_newElemAdded.notify_all();
     }
 
+    /*! Called by receiver threads, polls a message from buffer, or waits if there are
+     *  no more ahead of thread's state's position in a buffer.
+     */ 
     bool pollMessage( MessType& mess ){
         std::unique_lock< std::mutex > lock( mut );
-        auto&& threadID = std::this_thread::get_id();
-
-        // Check for death situations.
-        if( dispatcherClosed && !itemCount ){
-            _dispatcherClosed:
-            Util::vlog( 1, verb, " [pollMsg]: (Thread %s): Dispatcher is already Closed!\n", \
-                        Util::toString(threadID).c_str() );
-            return false;
-        }
 
         // Get the state of calling thread.
+        auto&& threadID = std::this_thread::get_id();
         auto&& tIter = findReceiverThread( threadID );
-
+        
         if( tIter == receiverThreads.end() ){
             _notSubscribed: 
             Util::vlog( 0, verb, "[pollMsg]: Thread %s hasn't subscribed!\n",
@@ -229,16 +224,22 @@ public:
         //  - We only have to check for one condition: if it's EQUAL to writePos.
         //  - If it's NOT equal to WritePos, it's in the available region.
         //
-        while( !itemCount || ( threadState->currPos == writePos ) ) {
-            // Check for the specific end conditions.
-            if( !threadState->isSubscribed )
-                goto _notSubscribed;
-
-            // Wait until new element gets added.
-            cond_newElemAdded.wait( lock );
+        while( ( threadState->currPos == writePos ) &&
+               ( threadState->isSubscribed && !dispatcherClosed ) ) 
+        {
+            cond_newElemAdded.wait( lock ); // Wait until new element gets added.
         }
-        if( dispatcherClosed && !itemCount )
-            goto _dispatcherClosed; 
+
+        // Check for the specific end conditions.
+        // Dispatcher already closed, and this thread is at the message buffer's end -
+        // no more messages to read.
+        if( dispatcherClosed && (threadState->currPos == writePos) ){
+            Util::vlog( 1, verb, " [pollMsg]: (Thread %s): Dispatcher is already Closed!\n", \
+                        Util::toString(threadID).c_str() );
+            return false;
+        }
+        if( !threadState->isSubscribed )
+            goto _notSubscribed;
 
         // At this point, the currPos in the available region and can process a message.
         // We don't need to fix overflows because we always increment positions modularly.
