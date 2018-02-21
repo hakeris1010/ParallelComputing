@@ -55,7 +55,7 @@ private:
     volatile bool dispatcherClosed = false;
 
     // Container for receiver thread states (position in buffer, etc.).
-    std::set< std::shared_ptr<MultiReceiverThreadState>, decltype(compareLambda) > threadStates;
+    std::set< std::shared_ptr<MultiReceiverThreadState>, decltype(compareLambda) > receiverThreads;
 
     // How many threads haven't yet read the oldest element.
     size_t lastElemRemainingReaders = 0;
@@ -64,8 +64,13 @@ private:
     // Protects the message buffer and properties which are written at every call.
     std::mutex mut;
 
-    // Condvar on which we wait when there are no elems remaining.
-    std::condition_variable cond;
+    // Condvar on which receiver thread waits when there are no more elements to read.
+    // Notified when new element is added to buffer.
+    std::condition_variable cond_newElemAdded;
+
+    // Condvar on which dispatcher waits for receivers to read the oldest element 
+    // when no place is left in the buffer. Notified when oldest elem gets removed.
+    std::condition_variable cond_oldestElemRemoved;
 
     /*! 
      *  Private functions assume that LOCK is ALREADY ACQUIRED.
@@ -77,39 +82,30 @@ private:
         return receiverThreads.find( std::make_shared< MultiReceiverThreadState >( id ) );
     }
 
-    /*! ======== Synchronized Barrier Service functions. ==========  
-     *
-     * Checks available polls, and resets poll counter if needed. 
-     *  - If all threads have already polled current message, reset poll 
-     *    availability, and move on to the next message.
+    /*! Removes the oldest element from buffer, performing these jobs:
+     *  - Checks for threads which haven't yet read the oldest element, and
+     *    if there are such threads, then iterates through threadStates and moves
+     *    the currPos forward for threads which are still on oldest element position.
+     *  - At the same time, checks for threads which are on the next elem after the last, 
+     *    incrementing the lastElemRemainingReaders accordingly.
+     *  - After that's done, increments the lastElemPos counter.
      */ 
-    size_t checkResetPolls(){
-        if( !pollableThreads ){
-            for( auto&& th : receiverThreads ){
-                th->pollAvailable = true;
+    void removeOldestMessage(){
+        // Compute new lastElemRemainingReaders value, fixing thread states at the same time.
+        lastElemRemainingReaders = 0;
+        for( auto&& state : receiverThreads ){
+            // Position is on the lastElem - move forward, to the new lastElem.
+            if( state->currPos == lastElemPos ){
+                state->currPos = ( state->currPos + 1 ) % ringBuffer.size();
+                lastElemRemainingReaders++;
             }
-            pollableThreads = receiverThreads.size();
-
-            if( itemCount > 0 ){
-                readPos++;
-                itemCount--;  
+            // Position on the next after lastElem - it's the new lastElem.
+            else if( state->currPos == lastElemPos+1 ){
+                lastElemRemainingReaders++;
             }
-
-            Util::vlog(2, verb, "\nThis was the last thread which received the message! "\
-                 "Resetting counters, procceeding with the next message.\n");
-
-            cond.notify_all();
-        } 
-        return pollableThreads;
-    }
-
-    void setPollAvailable( std::shared_ptr< MultiReceiverThreadState > ts, bool val ){
-        if( (ts->pollAvailable) && !val )
-            pollableThreads--;
-        else if( !(ts->pollAvailable) && val )
-            pollableThreads++;     
-
-        ts->pollAvailable = val;
+        }
+        // New value of last elem readers is computed, now just increment the lastElemPos.
+        lastElemPos = ( lastElemPos + 1 ) % ringBuffer.size();
     }
 
 public:
@@ -157,8 +153,7 @@ public:
                 else{ 
                     // Wait until the oldest one gets removed (read by all receiv0rs).
                     while( writePos == lastElemPos ){
-                        //oldestElementCond.wait( lock );
-                        cond.wait( lock );
+                        cond_oldestElemRemoved.wait( lock );
                     }
                 }
             }
@@ -175,8 +170,8 @@ public:
             Util::vlog( 2, verb, "[dispatchMsg SUCC!]: (%p), writePos: %d, itemCount: %d\n",
                   &ringBuffer[ writePos - 1 ], writePos, itemCount );
         }
-        // Wake up waiting threads to procceed with message consuming.
-        cond.notify_all(); 
+        // Notify waiting receivers that new element has been added.
+        cond_newElemAdded.notify_all();
     }
 
     bool pollMessage( MessType& mess ){
@@ -184,7 +179,7 @@ public:
 
         // Check for death situations.
         if( dispatcherClosed && !itemCount ){
-            dispatcherClosed:
+            _dispatcherClosed:
             Util::vlog( 1, verb, " [pollMsg]: Dispatcher is Closed! No more messages to expect!\n" );
             return false;
         }
@@ -194,7 +189,7 @@ public:
         auto&& tIter = findReceiverThread( threadID );
 
         if( tIter == receiverThreads.end() ){
-            notSubscribed: 
+            _notSubscribed: 
             Util::vlog( 0, verb, "[pollMsg]: Thread %s hasn't subscribed!\n",
                         Util::toString(threadID).c_str() );
             return false;
@@ -215,11 +210,12 @@ public:
         while( !itemCount || ( threadState->currPos == writePos ) ) {
             // Check for the specific end conditions.
             if( !threadState->isSubscribed )
-                goto notSubscribed;
+                goto _notSubscribed;
             else if( dispatcherClosed && !itemCount )
-                goto dispatcherClosed;
+                goto _dispatcherClosed;
 
-            cond.wait( lock );
+            // Wait until new element gets added.
+            cond_newElemAdded.wait( lock );
         }
         // At this point, the currPos in the available region and can process a message.
         // We don't need to fix overflows because we always increment positions modularly.
@@ -265,8 +261,8 @@ public:
         // insert() returns std::pair, with second element indicating if new 
         // element was inserted to a set.
         if( res.second ){
-            thState->pollAvailable = true;
-            pollableThreads++;
+            thState->currPos = lastElemPos;
+            lastElemRemainingReaders++;
         }
     }
 
@@ -278,7 +274,9 @@ public:
 
         auto&& iter = findReceiverThread( std::this_thread::get_id() );
         if( iter != receiverThreads.end() ){
-            setPollAvailable( *iter, false );
+            // Decrement the "threads on last element" counter if this thread was one of them.
+            if( (*iter)->currPos == lastElemPos && lastElemRemainingReaders > 0 )
+                lastElemRemainingReaders--;
 
             // Mark thread as no longer subscribed, and erase from the list.
             (*iter)->isSubscribed = false;
@@ -289,13 +287,16 @@ public:
     /*! Marks dispatcher as "closed", hencefore no more message polls will be accepted.
      */ 
     void closeDispatcher(){
-        dispatcherClosed = true;
-
+        {
+            std::lock_guard< std::mutex > lock( mut );
+            dispatcherClosed = true;
+        }
         Util::vlog( 2, verb, "\nDispatcher is closing!\n" );
 
-        // To prevent DeadLocks, notify the waiters to check the condition.
-        cond.notify_all();
+        // To prevent DeadLocks, notify the waiters to check the dispatcherClosed condition.
+        cond_newElemAdded.notify_all();
     }
+
 };
 
 #endif // MULTIRECEIVE_MESSAGE_SERVICE_HPP_INCLUDED
