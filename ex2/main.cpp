@@ -2,6 +2,7 @@
 #include <thread>
 #include <mutex>
 #include "BarrierMessageService.hpp"
+#include "MultiReceiveMessageService.hpp"
 
 /*! Demonstration function receiving messages.
  *  - Prints stuff to console according to messages.
@@ -11,7 +12,7 @@
  *    object for as long as function executes, as we execute it on a thread.
  */ 
 template< class MSG >
-void receiverRunner( std::shared_ptr< MessageReceiver<MSG> > rec, size_t waitTime = 0 ){
+void receiverRunner( std::shared_ptr< MessageReceiver<MSG> > rec, const size_t waitTime = 0 ){
     static std::mutex outmut;
     static volatile size_t maxcount = 0;
 
@@ -48,12 +49,12 @@ void receiverRunner( std::shared_ptr< MessageReceiver<MSG> > rec, size_t waitTim
 void dispatcherRunner( std::shared_ptr< MessageDispatcher< std::string > > dis, 
                        size_t waitTime = 0 )
 {
-    const size_t iters = 3;
+    const size_t iters = 2;
     for( size_t i = 0; i < iters; i++ ){
         if( waitTime )
             std::this_thread::sleep_for( std::chrono::milliseconds( waitTime ) ); 
          
-        std::string msg = ( i%2 ? "Hello" : "World" );
+        std::string msg = ( i%2 ? "Hello" : (i%3 ? "World" : "Programming") );
 
         dis->dispatchMessage( std::move( msg ) );
     }
@@ -64,10 +65,11 @@ void dispatcherRunner( std::shared_ptr< MessageDispatcher< std::string > > dis,
  *  and all message receiver threads.
  */
 int main(){
-    const size_t receiverCount = 10;
+    const size_t receiverCount = 2;
 
     // Create a message communication service.
-    BarrierMessageService< std::string > service;
+    MultiReceiverMessageService< std::string > service;
+    //BarrierMessageService< std::string > service;
 
     // Spawn receivers.
     std::vector< std::thread > receiverPool;

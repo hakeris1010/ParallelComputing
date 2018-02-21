@@ -18,7 +18,7 @@
  */ 
 struct MultiReceiverThreadState : public ThreadState {
     using ThreadState::ThreadState;
-    size_t currPos;
+    size_t currPos = 0;
 };
 
 /*! TODO (NO LONGER): 
@@ -33,6 +33,10 @@ struct MultiReceiverThreadState : public ThreadState {
 template<class MessType>
 class MultiReceiverMessageService : public MessageService<MessType>{
 private:
+    const static size_t DEFAULT_BUFFSIZE  = 8;
+    const static int    DEFAULT_VERBOSITY = 2;
+    const static bool   DEFAULT_OVERWRITE_OLDEST = false;
+
     // Option control properties.
     const int verb;
     const bool overwriteOldest;
@@ -91,6 +95,13 @@ private:
      *  - After that's done, increments the lastElemPos counter.
      */ 
     void removeOldestMessage(){
+        if( !itemCount )
+            return;
+ 
+        Util::vlog( 2, verb, "[removeOldestMsg]: old remainingReaders: %d, " \
+                             "lastElPos: %d, writePos: %d\n",
+                    lastElemRemainingReaders, lastElemPos, writePos );
+        
         // Compute new lastElemRemainingReaders value, fixing thread states at the same time.
         lastElemRemainingReaders = 0;
         for( auto&& state : receiverThreads ){
@@ -104,21 +115,23 @@ private:
                 lastElemRemainingReaders++;
             }
         }
-        // New value of last elem readers is computed, now just increment the lastElemPos.
+        // New value of last elem readers is computed, now just increment the
+        // position of the last element, and remove the oldest item.
         lastElemPos = ( lastElemPos + 1 ) % ringBuffer.size();
+        itemCount--;
+
+        Util::vlog( 2, verb, "  NEW remainingReaders: %d, lastElPos: %d, writePos: %d\n\n",
+                    lastElemRemainingReaders, lastElemPos, writePos );
     }
 
 public:
-    const static size_t DEFAULT_BUFFSIZE = 256;
-    const static size_t DEFAULT_VERBOSITY = 0;
-
     /*! Constructor. 
      *  - Creates initial buffer.
      */  
     MultiReceiverMessageService( size_t buffSize = DEFAULT_BUFFSIZE, 
-                    bool _overwriteOldest = true,
-                    std::initializer_list<MessType>&& initialMess = {},
-                    int _verbosity = DEFAULT_VERBOSITY )
+                    bool _overwriteOldest        = DEFAULT_OVERWRITE_OLDEST,
+                    int _verbosity               = DEFAULT_VERBOSITY,
+                    std::initializer_list<MessType>&& initialMess = {} )
     : verb( _verbosity ), overwriteOldest( _overwriteOldest ),
       ringBuffer( initialMess ), writePos( initialMess.size() ), 
       itemCount( initialMess.size() ), 
@@ -143,9 +156,13 @@ public:
         {
             std::unique_lock< std::mutex > lock( mut );
 
+            // If closed dispatcher has been marked, it can no longer post messages.
+            if( dispatcherClosed )
+                return;
+
             // Condition when there's no place to write to - the write pos has reached 
             // the last elem pos.
-            if( writePos == lastElemPos ){
+            if( itemCount && writePos == lastElemPos ){
                 if( overwriteOldest ){
                     // Remove oldest (moving receiver pointers to the next one).
                     removeOldestMessage();
@@ -167,7 +184,7 @@ public:
             writePos = (writePos + 1) % ringBuffer.size();
             itemCount++;
 
-            Util::vlog( 2, verb, "[dispatchMsg SUCC!]: (%p), writePos: %d, itemCount: %d\n",
+            Util::vlog( 1, verb, "[dispatchMsg SUCC!]: (%p), writePos: %d, itemCount: %d\n",
                   &ringBuffer[ writePos - 1 ], writePos, itemCount );
         }
         // Notify waiting receivers that new element has been added.
@@ -176,16 +193,17 @@ public:
 
     bool pollMessage( MessType& mess ){
         std::unique_lock< std::mutex > lock( mut );
+        auto&& threadID = std::this_thread::get_id();
 
         // Check for death situations.
         if( dispatcherClosed && !itemCount ){
             _dispatcherClosed:
-            Util::vlog( 1, verb, " [pollMsg]: Dispatcher is Closed! No more messages to expect!\n" );
+            Util::vlog( 1, verb, " [pollMsg]: (Thread %s): Dispatcher is already Closed!\n", \
+                        Util::toString(threadID).c_str() );
             return false;
         }
 
         // Get the state of calling thread.
-        auto&& threadID = std::this_thread::get_id();
         auto&& tIter = findReceiverThread( threadID );
 
         if( tIter == receiverThreads.end() ){
@@ -196,6 +214,10 @@ public:
         }
 
         std::shared_ptr< MultiReceiverThreadState > threadState = *tIter;
+
+        // Polling starts!
+        Util::vlog( 2, verb, "[pollMsg]: Thread %s is polling.\n",
+                    Util::toString(threadID).c_str() );  
 
         // Wait if no elements can be read.
         // Our position (currPos) is always in these states:
@@ -211,12 +233,13 @@ public:
             // Check for the specific end conditions.
             if( !threadState->isSubscribed )
                 goto _notSubscribed;
-            else if( dispatcherClosed && !itemCount )
-                goto _dispatcherClosed;
 
             // Wait until new element gets added.
             cond_newElemAdded.wait( lock );
         }
+        if( dispatcherClosed && !itemCount )
+            goto _dispatcherClosed; 
+
         // At this point, the currPos in the available region and can process a message.
         // We don't need to fix overflows because we always increment positions modularly.
        
@@ -224,26 +247,25 @@ public:
         // could also read this message.
         mess = ringBuffer[ threadState->currPos ]; 
 
-        // Check if it's the oldest message, and perform jobs if so.
-        if( threadState->currPos == lastElemPos ){
+        // Increment the current position, moving on to next element.
+        size_t oldCurpos = threadState->currPos;
+        threadState->currPos = (threadState->currPos + 1) % ringBuffer.size();  
+
+        Util::vlog( 2, verb, " [pollMsg SUCC!]: Thread %s RECEIVED message \"%s\".\n" \
+                             "            writePos: %d, currPos: %d, itemCount: %d\n", 
+                    Util::toString(threadID).c_str(), Util::toString( mess ).c_str(),
+                    writePos, threadState->currPos, itemCount ); 
+
+        // Check if we've just read an oldest message, and perform jobs if so.
+        if( oldCurpos == lastElemPos ){
             if( lastElemRemainingReaders > 0 )
                 lastElemRemainingReaders--;
             
             // If we were the last ones to read it, remove it.
             if( !lastElemRemainingReaders ){
                 removeOldestMessage();
-                //lastElemPos = ( lastElemPos + 1 ) % ringBuffer.size();
             }
         }
-
-        // And increment the current position, moving on to next element.
-        threadState->currPos = (threadState->currPos + 1) % ringBuffer.size(); 
-
-        // Success!
-        Util::vlog( 2, verb, " [pollMsg] (%p): Thread %s RECEIVED SUCCESSFULLY. \n" \
-                             "  writePos: %d, currPos: %d, itemCount: %d\n", 
-                    &ringBuffer[readPos], Util::toString(threadID).c_str(), 
-                    writePos, threadState->currPos, itemCount ); 
 
         return true;
     } 
@@ -263,7 +285,12 @@ public:
         if( res.second ){
             thState->currPos = lastElemPos;
             lastElemRemainingReaders++;
+
+            Util::vlog( 2, verb, "[subscribe()]: Thread %s subscribed successfully!\n",
+                        Util::toString( std::this_thread::get_id() ).c_str() );
+            return true;
         }
+        return false;
     }
 
     /*! "UnSubscribe" from the message service. 
@@ -281,16 +308,17 @@ public:
             // Mark thread as no longer subscribed, and erase from the list.
             (*iter)->isSubscribed = false;
             receiverThreads.erase( iter );
+
+            Util::vlog( 2, verb, "[unSubscribe()]: Thread %s UnSubscribed successfully.\n",
+                        Util::toString( std::this_thread::get_id() ).c_str() ); 
         }
     }
 
     /*! Marks dispatcher as "closed", hencefore no more message polls will be accepted.
      */ 
     void closeDispatcher(){
-        {
-            std::lock_guard< std::mutex > lock( mut );
-            dispatcherClosed = true;
-        }
+        dispatcherClosed = true;
+
         Util::vlog( 2, verb, "\nDispatcher is closing!\n" );
 
         // To prevent DeadLocks, notify the waiters to check the dispatcherClosed condition.
