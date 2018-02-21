@@ -39,8 +39,16 @@ private:
 
     // Message buffer and properties.
     std::vector< MessType > ringBuffer;
+
+    // Available region end and start positions (writePos and lastElemPos)
     size_t writePos = 0;
     size_t lastElemPos = 0;
+
+    // Indicates whether available region is splitted, i.e. latest elements are 
+    // at the beginning, however there are still old elements at the end.
+    bool regionSplitted = false;
+
+    // Size o' available region.
     size_t itemCount = 0;
 
     // "Dispacther is dead" property.
@@ -54,15 +62,14 @@ private:
 
     // Synchronizing variables. Protecc's several stuff.
     // Protects the message buffer and properties which are written at every call.
-    std::mutex mut_BufferAndClass;
-
-    // Protects thread state set, which is modified rarely.
-    std::mutex mut_ThreadStates;
+    std::mutex mut;
 
     // Condvar on which we wait when there are no elems remaining.
     std::condition_variable cond;
 
-    /*! These private functions assume that LOCK is ALREADY ACQUIRED.
+    /*! 
+     *  Private functions assume that LOCK is ALREADY ACQUIRED.
+     *
      * - Returns an iterator to std::shared_ptr to threadState object with id = id.
      *  @param id - Thread's ID.
      */ 
@@ -138,83 +145,111 @@ public:
     void dispatchMessage( MessType&& mess ){
         // Lock the commonly-written Class and Buffer mutex - adding a new message to queue.
         {
-            std::lock_guard< std::mutex > lock( mut_BufferAndClass );
-            if( writePos >= ringBuffer.size() )
-                writePos = 0;
+            std::unique_lock< std::mutex > lock( mut );
 
             // Condition when there's no place to write to - the write pos has reached 
             // the last elem pos.
             if( writePos == lastElemPos ){
                 if( overwriteOldest ){
-
+                    // Remove oldest (moving receiver pointers to the next one).
+                    removeOldestMessage();
+                }
+                else{ 
+                    // Wait until the oldest one gets removed (read by all receiv0rs).
+                    while( writePos == lastElemPos ){
+                        //oldestElementCond.wait( lock );
+                        cond.wait( lock );
+                    }
                 }
             }
+            // At this point write position is OK, because this function is the
+            // only one which is modifying the write position.
 
-            // Move data to the position in buffer.
+            // MOVE data to the position in buffer.
             ringBuffer[ writePos ] = std::move( mess );
 
-            writePos++;
+            // Increment write position (end of region) modularly.
+            writePos = (writePos + 1) % ringBuffer.size();
             itemCount++;
 
-            Util::vlog( 2, verb, "[dispatchMsg]: (%p), writePos: %d, readPos: %d, itemCount: %d\n",
-                  &ringBuffer[ writePos - 1 ], writePos, readPos, itemCount );
+            Util::vlog( 2, verb, "[dispatchMsg SUCC!]: (%p), writePos: %d, itemCount: %d\n",
+                  &ringBuffer[ writePos - 1 ], writePos, itemCount );
         }
         // Wake up waiting threads to procceed with message consuming.
         cond.notify_all(); 
     }
 
     bool pollMessage( MessType& mess ){
+        std::unique_lock< std::mutex > lock( mut );
+
+        // Check for death situations.
         if( dispatcherClosed && !itemCount ){
+            dispatcherClosed:
             Util::vlog( 1, verb, " [pollMsg]: Dispatcher is Closed! No more messages to expect!\n" );
             return false;
         }
 
-        {
-            std::unique_lock< std::mutex > lock( mut );
-            auto&& threadID = std::this_thread::get_id();
-            auto&& tIter = findReceiverThread( threadID );
+        // Get the state of calling thread.
+        auto&& threadID = std::this_thread::get_id();
+        auto&& tIter = findReceiverThread( threadID );
 
-            if( tIter == receiverThreads.end() ){
-                Util::vlog( 0, verb, "[pollMsg]: Thread %s hasn't subscribed!\n",
-                      Util::toString(threadID).c_str() );
-                return false;
-            }
+        if( tIter == receiverThreads.end() ){
+            notSubscribed: 
+            Util::vlog( 0, verb, "[pollMsg]: Thread %s hasn't subscribed!\n",
+                        Util::toString(threadID).c_str() );
+            return false;
+        }
 
-            std::shared_ptr< MultiReceiverThreadState > threadState = *tIter;
+        std::shared_ptr< MultiReceiverThreadState > threadState = *tIter;
 
-            // Check if poll is available for this thread (hasn't already polled current msg.)
-            if( itemCount && threadState->pollAvailable ) 
-            {
-                setPollAvailable( threadState, false );
+        // Wait if no elements can be read.
+        // Our position (currPos) is always in these states:
+        //  - ALWAYS in the space higher or equal than the available region beginning,
+        //    so we don't have to check if it's before the beginning of the region.
+        //  - However, it can be equal to region's end ( writePos ), if the writer hasn't yet
+        //    added a new message and we extracted all of them.  
+        //  SO:
+        //  - We only have to check for one condition: if it's EQUAL to writePos.
+        //  - If it's NOT equal to WritePos, it's in the available region.
+        //
+        while( !itemCount || ( threadState->currPos == writePos ) ) {
+            // Check for the specific end conditions.
+            if( !threadState->isSubscribed )
+                goto notSubscribed;
+            else if( dispatcherClosed && !itemCount )
+                goto dispatcherClosed;
 
-                if( readPos >= ringBuffer.size() )
-                    readPos = 0;
+            cond.wait( lock );
+        }
+        // At this point, the currPos in the available region and can process a message.
+        // We don't need to fix overflows because we always increment positions modularly.
+       
+        // Copy message to memory passed. Can't move because there are many readers which
+        // could also read this message.
+        mess = ringBuffer[ threadState->currPos ]; 
 
-                mess = ringBuffer[ readPos ]; 
-
-                Util::vlog(2, verb," [pollMsg] (%p): Thread %s RECEIVED this the first time. \n" \
-                             "  writePos: %d, readPos: %d, itemCount: %d\n", 
-                    &ringBuffer[readPos], Util::toString(threadID).c_str(), 
-                    writePos, readPos, itemCount ); 
-
-                // Check if all receivers have polled the current message, and if so,
-                // reset the poll counters, and make threads poll again.
-                checkResetPolls();
-                 
-                return true;
-            }
+        // Check if it's the oldest message, and perform jobs if so.
+        if( threadState->currPos == lastElemPos ){
+            if( lastElemRemainingReaders > 0 )
+                lastElemRemainingReaders--;
             
-            // If thread has already received the message (or no available), 
-            // wait until new message appears - new poll becomes available.
-            while( ( !(threadState->pollAvailable) || !itemCount ) && 
-                   threadState->isSubscribed && !(dispatcherClosed && !itemCount) )
-            {
-                cond.wait( lock );
+            // If we were the last ones to read it, remove it.
+            if( !lastElemRemainingReaders ){
+                removeOldestMessage();
+                //lastElemPos = ( lastElemPos + 1 ) % ringBuffer.size();
             }
         }
 
-        // Get the "next" message. ("Next" is now the current).
-        return pollMessage( mess );
+        // And increment the current position, moving on to next element.
+        threadState->currPos = (threadState->currPos + 1) % ringBuffer.size(); 
+
+        // Success!
+        Util::vlog( 2, verb, " [pollMsg] (%p): Thread %s RECEIVED SUCCESSFULLY. \n" \
+                             "  writePos: %d, currPos: %d, itemCount: %d\n", 
+                    &ringBuffer[readPos], Util::toString(threadID).c_str(), 
+                    writePos, threadState->currPos, itemCount ); 
+
+        return true;
     } 
 
     /*! "Subscribe" to message service. 
