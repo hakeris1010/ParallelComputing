@@ -20,6 +20,7 @@ struct MultiReceiverThreadState : public ThreadState {
     using ThreadState::ThreadState;
     size_t currPos = 0;
     size_t roundCount = 0;
+    size_t receiveCount = 0;
 };
 
 // NewShit.png
@@ -77,6 +78,9 @@ private:
     // Size o' available region.
     size_t itemCount = 0;
 
+    // How many items (messages) were dispatched overall
+    size_t dispatchedMessageCount = 0;
+
     // "Dispacther is dead" property.
     volatile bool dispatcherClosed = false;
 
@@ -130,9 +134,15 @@ private:
         lastElemRemainingReaders = 0;
         for( auto&& state : receiverThreads ){
             // Position is on the lastElem - move forward, to the new lastElem.
-            if( state->currPos == lastElemPos ){
+            if( state->currPos == lastElemPos && 
+                state->receiveCount != dispatchedMessageCount )
+            {
                 state->currPos = ( state->currPos + 1 ) % ringBuffer.size();
+                state->receiveCount++;
                 lastElemRemainingReaders++;
+
+                Util::vlog( 1, verb, "[removeOldestMsg]: Incrementing currPos of thread %s.\n",
+                            Util::toString( state->id ).c_str() );
             }
             // Position on the next after lastElem - it's the new lastElem.
             else if( state->currPos == ((lastElemPos+1) % ringBuffer.size()) ){
@@ -162,6 +172,7 @@ public:
                     std::initializer_list<MessType>&& initialMess = {} )
     : verb( _verbosity ), overwriteOldest( _overwriteOldest ),
       ringBuffer( initialMess ), itemCount( initialMess.size() ), 
+      dispatchedMessageCount( initialMess.size() ),
       receiverThreads( compareLambda )
     {
         writePos = 0;
@@ -228,6 +239,7 @@ public:
             // Increment write position (end of region) modularly.
             writePos = (writePos + 1) % ringBuffer.size();
             itemCount++;
+            dispatchedMessageCount++;
 
             // Increment the round count if lastElemPos once again reached buffer start.
             if( writePos == 0 )
@@ -276,8 +288,8 @@ public:
                         "threadState->roundCnt: %d \n", Util::toString( threadID ).c_str(),
                         roundCount, threadState->roundCount );
 
-            if( threadState->roundCount != roundCount )
-                goto _pollAct;
+            //if( threadState->roundCount != roundCount )
+            //    goto _pollAct;
         }
 
         // Wait if no elements can be read.
@@ -296,7 +308,8 @@ public:
         //  3. Situation is pollable (thread still subscribed and dispatcher still working).
         //
         while( ( threadState->currPos == writePos ) && 
-               ( threadState->roundCount == roundCount ) &&
+               ( threadState->receiveCount == dispatchedMessageCount ) && 
+              // ( threadState->roundCount == roundCount ) &&
               //!( lastElemPos == writePos && itemCount == ringBuffer.size() &&  
               //   threadState->roundCount != roundCount ) &&
                ( threadState->isSubscribed && !dispatcherClosed ) ) 
@@ -304,13 +317,13 @@ public:
             cond_newElemAdded.wait( lock ); // Wait until new element gets added.
         }
 
-        _pollAct:
+        //_pollAct:
 
         // Check for the specific end conditions.
         // Dispatcher already closed, and this thread is at the message buffer's end -
         // no more messages to read.
-        if( dispatcherClosed && (threadState->currPos == writePos) &&
-            threadState->roundCount == roundCount )
+        if( dispatcherClosed && (threadState->currPos == writePos) && 
+            threadState->receiveCount == dispatchedMessageCount )
         {
             Util::vlog( 1, verb, " [pollMsg]: (Thread %s): Dispatcher is CLOSED! (" \
                 "itc: %d, wrt: %d, lst: %d, crp: %d\n", Util::toString(threadID).c_str(),
@@ -330,6 +343,8 @@ public:
         // Increment the current position, moving on to next element.
         size_t oldCurpos = threadState->currPos;
         threadState->currPos = (threadState->currPos + 1) % ringBuffer.size();  
+
+        threadState->receiveCount++;
 
         // Synchronize RoundCount, after successfully extracted a message in current round.
         if( threadState->currPos == 0)
