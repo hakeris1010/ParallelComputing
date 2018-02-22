@@ -35,7 +35,7 @@ template<class MessType>
 class MultiReceiverMessageService : public MessageService<MessType>{
 private:
     const static size_t DEFAULT_BUFFSIZE  = 2;
-    const static int    DEFAULT_VERBOSITY = 0;
+    const static int    DEFAULT_VERBOSITY = 1;
     const static bool   DEFAULT_OVERWRITE_OLDEST = false;
 
     // Option control properties.
@@ -105,9 +105,9 @@ private:
         if( !itemCount )
             return;
  
-        Util::vlog( 2, verb, "[removeOldestMsg]: old remainingReaders: %d, " \
-                             "lastElPos: %d, writePos: %d\n",
-                    lastElemRemainingReaders, lastElemPos, writePos );
+        Util::vlog( 1, verb, "[removeOldestMsg OLD]: remRdrs: %d, " \
+                             "lastElPos: %d, writePos: %d, roundCount: %d\n",
+                    lastElemRemainingReaders, lastElemPos, writePos, roundCount );
         
         // Compute new lastElemRemainingReaders value, fixing thread states at the same time.
         lastElemRemainingReaders = 0;
@@ -127,7 +127,7 @@ private:
         lastElemPos = ( lastElemPos + 1 ) % ringBuffer.size();
         itemCount--;
 
-        Util::vlog( 2, verb, "                   NEW remainingReaders: %d, " \
+        Util::vlog( 2, verb, "[removeOldestMsg NEW]: remRdrs: %d, " \
                              "lastElPos: %d, writePos: %d, roundCount: %d\n\n",
                     lastElemRemainingReaders, lastElemPos, writePos, roundCount );
 
@@ -206,7 +206,7 @@ public:
             if( writePos == 0 )
                 roundCount++; 
 
-            Util::vlog( 1, verb, "[dispatchMsg SUCC!]: (%p), writePos: %d, " \
+            Util::vlog( 2, verb, "[dispatchMsg SUCC!]: (%p), writePos: %d, " \
                                  "itemCount: %d, roundCount:%d\n",
                     &ringBuffer[ writePos - 1 ], writePos, itemCount, roundCount );
         }
@@ -226,7 +226,7 @@ public:
         
         if( tIter == receiverThreads.end() ){
             _notSubscribed: 
-            Util::vlog( 0, verb, "[pollMsg]: Thread %s hasn't subscribed!\n",
+            Util::vlog( 1, verb, "[pollMsg]: Thread %s hasn't subscribed!\n",
                         Util::toString(threadID).c_str() );
             return false;
         }
@@ -241,11 +241,17 @@ public:
         // FIXME: Check for situation when the thread is still on lastElemPos, but the 
         // buffer is full (writePos == lastElemPos) , unable to add new elems 
         // because the oldest one is still not read by all threads.
-        /*if( threadState->currPos == lastElemPos && lastElemPos == writePos &&
+        if( threadState->currPos == lastElemPos && lastElemPos == writePos &&
             itemCount == ringBuffer.size() )
         {
             // If so, ignore the wait.
-        }*/
+            Util::vlog( 0, verb, "[pollMsg]: (Thread %s): BUFFER FULL! roundCnt: %d, " \
+                        "threadState->roundCnt: %d \n", Util::toString( threadID ).c_str(),
+                        roundCount, threadState->roundCount );
+
+            if( threadState->roundCount != roundCount )
+                goto _pollAct;
+        }
 
         // Wait if no elements can be read.
         // Our position (currPos) is always in these states:
@@ -264,18 +270,22 @@ public:
         //
         while( ( threadState->currPos == writePos ) && 
                //FIXME:         
-              !( lastElemPos == writePos && itemCount == ringBuffer.size() &&  
-                 threadState->roundCount == roundCount ) &&
+              //!( lastElemPos == writePos && itemCount == ringBuffer.size() &&  
+              //   threadState->roundCount == roundCount ) &&
                ( threadState->isSubscribed && !dispatcherClosed ) ) 
         {
             cond_newElemAdded.wait( lock ); // Wait until new element gets added.
         }
 
+        _pollAct:
+
         // Check for the specific end conditions.
         // Dispatcher already closed, and this thread is at the message buffer's end -
         // no more messages to read.
-        if( dispatcherClosed && (threadState->currPos == writePos) ){
-            Util::vlog( 1, verb, " [pollMsg]: (Thread %s): Dispatcher is already Closed!\n", \
+        if( dispatcherClosed && (threadState->currPos == writePos) && 
+            threadState->roundCount == roundCount )
+        {
+            Util::vlog( 1, verb, " [pollMsg]: (Thread %s): Dispatcher is already CLOSED!\n", \
                         Util::toString(threadID).c_str() );
             return false;
         }
@@ -293,6 +303,10 @@ public:
         size_t oldCurpos = threadState->currPos;
         threadState->currPos = (threadState->currPos + 1) % ringBuffer.size();  
 
+        // Synchronize RoundCount, after successfully extracted a message in current round.
+        if( threadState->currPos == 0)
+            threadState->roundCount = roundCount; 
+
         Util::vlog( 2, verb, "[pollMsg SUCC!]: Thread %s RECEIVED message \"%s\".\n" \
                              "                 writePos: %d, currPos: %d, itemCount: %d\n", 
                     Util::toString(threadID).c_str(), Util::toString( mess ).c_str(),
@@ -307,9 +321,6 @@ public:
                 removeOldestMessage();
             }
         }
-
-        // Synchronize RoundCount, after successfully extracted a message in current round.
-        threadState->roundCount = roundCount;
 
         return true;
     } 

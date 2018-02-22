@@ -41,7 +41,8 @@ void receiverRunner( std::shared_ptr< MessageReceiver<MSG> > rec, const size_t w
         if( waitTime )
             std::this_thread::sleep_for( std::chrono::milliseconds( waitTime ) );
     }
-    rec->unSubscribe();
+    // TODO:
+    //rec->unSubscribe();
 }
 
 /*! Demonstration function dispatching messages.
