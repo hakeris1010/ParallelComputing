@@ -22,6 +22,22 @@ struct MultiReceiverThreadState : public ThreadState {
     size_t roundCount = 0;
 };
 
+// NewShit.png
+/*! Structure for storing an element of a buffer.
+ *  - Supports emptiness.
+ */ 
+template< class Data >
+struct BufferElement{
+    Data data;
+    volatile bool isEmpty = true;
+
+    BufferElement(){}
+    BufferElement( const Data& item ) : data( item ) {}
+    // And a move semantic ct0r.
+    BufferElement( Data&& item ) : data( std::move( item ) ) {}
+};
+
+
 /*! TODO (NO LONGER): 
  * - CONFIRMED that this approach is not optimal because of limited usability and
  *   high interconnection to individual features of each component.
@@ -43,6 +59,7 @@ private:
     const bool overwriteOldest;
 
     // Message buffer and properties.
+    //std::vector< BufferElement< MessType > > ringBuffer;
     std::vector< MessType > ringBuffer;
 
     // Available region end and start positions (writePos and lastElemPos)
@@ -144,20 +161,30 @@ public:
                     int _verbosity               = DEFAULT_VERBOSITY,
                     std::initializer_list<MessType>&& initialMess = {} )
     : verb( _verbosity ), overwriteOldest( _overwriteOldest ),
-      ringBuffer( initialMess ), writePos( initialMess.size() ), 
-      itemCount( initialMess.size() ), 
+      ringBuffer( initialMess ), itemCount( initialMess.size() ), 
       receiverThreads( compareLambda )
     {
+        writePos = 0;
         if( ringBuffer.empty() ){
             ringBuffer.assign( buffSize, MessType() );
         }
         else if( ringBuffer.size() < buffSize ){
+            writePos = ringBuffer.size() % buffSize;
             ringBuffer.reserve( buffSize );
+
             // Fill the remaining place with empty elements.
             for( size_t i = ringBuffer.size(); i < buffSize; i++ ){
                 ringBuffer.push_back( MessType() );
             }
         }
+
+        /*size_t len = ( initialMess.size() > ringBuffer.size() ? 
+                       ringBuffer.size() : initialMess.size() );
+        for( size_t i = 0; i < len; i++ ){
+            ringBuffer[ i ].data = std::move( initialMess[i] );
+            ringBuffer[ i ]. 
+
+        }*/
 
         Util::vlog( 1, verb, "[MultiReceiverMessageService constructor]: BuffSize: %d\n",
                     ringBuffer.size() );
@@ -265,13 +292,13 @@ public:
         //
         //  Conditions of each line: 
         //  1. We're on the end of buffer, no messages ahead.
-        //  2. FIXME: Buffer is NOT full (deadlock occurs if so, because writePos == lastElemPos).
+        //  2. We're in the same round as writer, it means we're on the actual end.
         //  3. Situation is pollable (thread still subscribed and dispatcher still working).
         //
         while( ( threadState->currPos == writePos ) && 
-               //FIXME:         
+               ( threadState->roundCount == roundCount ) &&
               //!( lastElemPos == writePos && itemCount == ringBuffer.size() &&  
-              //   threadState->roundCount == roundCount ) &&
+              //   threadState->roundCount != roundCount ) &&
                ( threadState->isSubscribed && !dispatcherClosed ) ) 
         {
             cond_newElemAdded.wait( lock ); // Wait until new element gets added.
@@ -282,11 +309,12 @@ public:
         // Check for the specific end conditions.
         // Dispatcher already closed, and this thread is at the message buffer's end -
         // no more messages to read.
-        if( dispatcherClosed && (threadState->currPos == writePos) && 
+        if( dispatcherClosed && (threadState->currPos == writePos) &&
             threadState->roundCount == roundCount )
         {
-            Util::vlog( 1, verb, " [pollMsg]: (Thread %s): Dispatcher is already CLOSED!\n", \
-                        Util::toString(threadID).c_str() );
+            Util::vlog( 1, verb, " [pollMsg]: (Thread %s): Dispatcher is CLOSED! (" \
+                "itc: %d, wrt: %d, lst: %d, crp: %d\n", Util::toString(threadID).c_str(),
+                itemCount, writePos, lastElemPos, threadState->currPos );
             return false;
         }
         if( !threadState->isSubscribed )
@@ -313,7 +341,8 @@ public:
                     writePos, threadState->currPos, itemCount ); 
 
         // Check if we've just read an oldest message, and perform jobs if so.
-        if( oldCurpos == lastElemPos ){
+        if( oldCurpos == lastElemPos )
+        {
             if( lastElemRemainingReaders > 1 )
                 lastElemRemainingReaders--;
             else{
