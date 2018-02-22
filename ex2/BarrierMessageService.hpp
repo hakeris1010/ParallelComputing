@@ -140,57 +140,54 @@ public:
     }
 
     bool pollMessage( MessType& mess ){
+        std::unique_lock< std::mutex > lock( mut );
+
+        // Check for "death situation".
         if( dispatcherClosed && !itemCount ){
             Util::vlog( 1, verb, " [pollMsg]: Dispatcher is Closed! No more messages to expect!\n" );
             return false;
         }
 
-        {
-            std::unique_lock< std::mutex > lock( mut );
-            auto&& threadID = std::this_thread::get_id();
-            auto&& tIter = findReceiverThread( threadID );
+        // Get the calling thread's state structure.
+        auto&& threadID = std::this_thread::get_id();
+        auto&& tIter = findReceiverThread( threadID );
 
-            if( tIter == receiverThreads.end() ){
-                Util::vlog( 0, verb, "[pollMsg]: Thread %s hasn't subscribed!\n",
-                      Util::toString(threadID).c_str() );
-                return false;
-            }
-
-            std::shared_ptr< BarrierThreadState > threadState = *tIter;
-
-            // Check if poll is available for this thread (hasn't already polled current msg.)
-            if( itemCount && threadState->pollAvailable ) 
-            {
-                setPollAvailable( threadState, false );
-
-                if( readPos >= ringBuffer.size() )
-                    readPos = 0;
-
-                mess = ringBuffer[ readPos ]; 
-
-                Util::vlog(2, verb," [pollMsg] (%p): Thread %s RECEIVED this the first time. \n" \
-                             "  writePos: %d, readPos: %d, itemCount: %d\n", 
-                    &ringBuffer[readPos], Util::toString(threadID).c_str(), 
-                    writePos, readPos, itemCount ); 
-
-                // Check if all receivers have polled the current message, and if so,
-                // reset the poll counters, and make threads poll again.
-                checkResetPolls();
-                 
-                return true;
-            }
-            
-            // If thread has already received the message (or no available), 
-            // wait until new message appears - new poll becomes available.
-            while( ( !(threadState->pollAvailable) || !itemCount ) && 
-                   threadState->isSubscribed && !(dispatcherClosed && !itemCount) )
-            {
-                cond.wait( lock );
-            }
+        if( tIter == receiverThreads.end() ){
+            Util::vlog( 0, verb, "[pollMsg]: Thread %s hasn't subscribed!\n",
+                  Util::toString(threadID).c_str() );
+            return false;
         }
 
-        // Get the "next" message. ("Next" is now the current).
-        return pollMessage( mess );
+        std::shared_ptr< BarrierThreadState > threadState = *tIter;
+
+        // Check for wait conditions. 
+        // If thread has already received the message (or no available), 
+        // wait until new message appears - new poll becomes available.
+        while( ( !(threadState->pollAvailable) || !itemCount ) && 
+               threadState->isSubscribed && !(dispatcherClosed && !itemCount) )
+        {
+            cond.wait( lock );
+        }
+        
+        // This thread won't be able to poll no more in this round.
+        // So set this thread's poll availability to false.
+        setPollAvailable( threadState, false );
+
+        if( readPos >= ringBuffer.size() )
+            readPos = 0;
+
+        mess = ringBuffer[ readPos ]; 
+
+        Util::vlog(2, verb," [pollMsg] (%p): Thread %s RECEIVED this the first time. \n" \
+                     "  writePos: %d, readPos: %d, itemCount: %d\n", 
+            &ringBuffer[readPos], Util::toString(threadID).c_str(), 
+            writePos, readPos, itemCount ); 
+
+        // Check if all receivers have polled the current message, and if so,
+        // reset the poll counters, and make threads poll again.
+        checkResetPolls();
+
+        return true;
     } 
 
     /*! "Subscribe" to message service. 
@@ -208,7 +205,10 @@ public:
         if( res.second ){
             thState->pollAvailable = true;
             pollableThreads++;
+
+            return true;
         }
+        return false;
     }
 
     /*! "UnSubscribe" from the message service. 
@@ -237,6 +237,7 @@ public:
         // To prevent DeadLocks, notify the waiters to check the condition.
         cond.notify_all();
     }
+
      
 };
 

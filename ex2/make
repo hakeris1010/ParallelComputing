@@ -1,5 +1,5 @@
 #!/bin/bash
-g++ --std=c++14 -c main.cpp -o main.o
+g++ --std=c++14 -Wall -O0 -fno-inline-functions -c main.cpp -o main.o
 g++ -o bin/ex2 main.o -lpthread
 
 
