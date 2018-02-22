@@ -12,7 +12,9 @@
  *    object for as long as function executes, as we execute it on a thread.
  */ 
 template< class MSG >
-void receiverRunner( std::shared_ptr< MessageReceiver<MSG> > rec, const size_t waitTime = 0 ){
+void receiverRunner( std::shared_ptr< MessageReceiver<MSG> > rec, const size_t waitTime = 0,
+                     const bool waitAtBeginning = false )
+{
     static std::mutex outmut;
     static volatile size_t maxcount = 0;
 
@@ -21,6 +23,10 @@ void receiverRunner( std::shared_ptr< MessageReceiver<MSG> > rec, const size_t w
     
     rec->subscribe();
     while( rec->pollMessage( msg ) ){
+        if( waitTime && waitAtBeginning ){
+            std::this_thread::sleep_for( std::chrono::milliseconds( waitTime ) ); 
+        }
+
         {
             // Lock the critical section - printing data and reading/modifying maxcount.
             std::lock_guard< std::mutex > lock( outmut );
@@ -38,8 +44,9 @@ void receiverRunner( std::shared_ptr< MessageReceiver<MSG> > rec, const size_t w
             std::cout << std::flush; 
         }
 
-        if( waitTime )
-            std::this_thread::sleep_for( std::chrono::milliseconds( waitTime ) );
+        if( waitTime && !waitAtBeginning ){
+            std::this_thread::sleep_for( std::chrono::milliseconds( waitTime ) ); 
+        } 
     }
     // TODO:
     //rec->unSubscribe();
@@ -48,26 +55,37 @@ void receiverRunner( std::shared_ptr< MessageReceiver<MSG> > rec, const size_t w
 /*! Demonstration function dispatching messages.
  */ 
 void dispatcherRunner( std::shared_ptr< MessageDispatcher< std::string > > dis, 
-                       size_t waitTime = 0 )
+                       size_t waitTime = 0,
+                       const bool waitAtBeginning = true )
 {
     const size_t iters = 5;
     for( size_t i = 0; i < iters; i++ ){
-        if( waitTime )
+        if( waitTime && waitAtBeginning )
             std::this_thread::sleep_for( std::chrono::milliseconds( waitTime ) ); 
          
         //std::string msg = ( i%2 ? "Hello" : (i%3 ? "World" : "Programming") );
         std::string msg = "[ MSG #"+ std::to_string( i ) +" ]";
 
         dis->dispatchMessage( std::move( msg ) );
+
+        if( waitTime && !waitAtBeginning )
+            std::this_thread::sleep_for( std::chrono::milliseconds( waitTime ) );  
     }
     dis->closeDispatcher();
 }
+
 
 /*! Launches the message dispath thread
  *  and all message receiver threads.
  */
 int main(){
-    const size_t receiverCount = 2;
+    const size_t receiverCount = 5;
+
+    const size_t dispatcherWaitTime = 5;
+    const size_t receiverWaitFactor = 70;
+
+    const bool recWaitAtBegin = false;
+    const bool dispWaitAtBegin = true;
 
     // Create a message communication service.
     MultiReceiverMessageService< std::string > service;
@@ -76,13 +94,18 @@ int main(){
     // Spawn receivers.
     std::vector< std::thread > receiverPool;
     receiverPool.reserve( receiverCount );
+
     for( size_t i = 0; i < receiverCount; i++ ){
-        receiverPool.push_back( std::thread( receiverRunner<std::string>, 
-            std::make_shared< MessageReceiver< std::string > >( service ), i*50 ) );
+        receiverPool.push_back( std::thread( 
+            receiverRunner<std::string>, 
+            std::make_shared< MessageReceiver< std::string > >( service ), 
+            i * receiverWaitFactor, recWaitAtBegin ) 
+        );
     }
 
     // Dispatcher - this thread.
-    dispatcherRunner( std::make_shared< MessageDispatcher<std::string> >( service ), 30 );
+    dispatcherRunner( std::make_shared< MessageDispatcher<std::string> >( service ), 
+                      dispatcherWaitTime, dispWaitAtBegin );
 
     // Join all threads.
     for( auto&& th : receiverPool ){

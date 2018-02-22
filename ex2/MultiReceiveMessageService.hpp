@@ -51,7 +51,7 @@ struct BufferElement{
 template<class MessType>
 class MultiReceiverMessageService : public MessageService<MessType>{
 private:
-    const static size_t DEFAULT_BUFFSIZE  = 2;
+    const static size_t DEFAULT_BUFFSIZE  = 128;
     const static int    DEFAULT_VERBOSITY = 0;
     const static bool   DEFAULT_OVERWRITE_OLDEST = false;
 
