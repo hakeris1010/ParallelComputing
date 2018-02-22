@@ -13,41 +13,44 @@
 #include <functional>
 #include "MessageService.hpp"
 
-/*! Multi-receiver async reading-ready state.
- *  - Includes a position in an input sequence.
+/*! Multi-receiver async reading-ready state. Includes:
+ *  - A position in an input message sequence.
+ *  - Count of all messages received by this thread.
+ *    This is used for checking whether a thread has reached the end of sequence
+ *    and mush wait for new message, or can procceed.
  */ 
 struct MultiReceiverThreadState : public ThreadState {
     using ThreadState::ThreadState;
     size_t currPos = 0;
-    size_t roundCount = 0;
     size_t receiveCount = 0;
+    //size_t roundCount = 0;
 };
 
-// NewShit.png
-/*! Structure for storing an element of a buffer.
- *  - Supports emptiness.
- */ 
-template< class Data >
-struct BufferElement{
-    Data data;
-    volatile bool isEmpty = true;
-
-    BufferElement(){}
-    BufferElement( const Data& item ) : data( item ) {}
-    // And a move semantic ct0r.
-    BufferElement( Data&& item ) : data( std::move( item ) ) {}
-};
-
-
-/*! TODO (NO LONGER): 
- * - CONFIRMED that this approach is not optimal because of limited usability and
- *   high interconnection to individual features of each component.
+/*! Multiple Receiver Async-get Message service class.
+ *  - Provides capabilities for multiple dispatchers (acting as one through sync),
+ *    and multiple receivers, allowing them to Asynchronously process incoming messages.
+ *  - Every receiver must first "Subscribe" to a service, thus an associated 
+ *    ThreadState structure is created for the subscribing receiver.
+ *  - ThreadState stores position in input sequence and other data.
  *
- * Pollability Control & Configuration classes.
- * - Checks and controls message receiver's ability to poll new messages.
- * - pollAvailable( id ) indicate whether this ID is able to poll a new message,
- *   must wait, or is no longer allowed to poll at all.  
- */ 
+ *  - The receiver threads can process messages from a buffer until no more messages 
+ *    are left, and then the next call blocks until new message arrives.
+ *  
+ *  - Service uses Ring-Buffer for storing messages.
+ *  - Oldest message is being removed from buffer when:
+ *    a) All receiver threads have processed that message
+ *    b) No space is left in the buffer. In this case there are 2 options:
+ *      1. Oldest message is removed forcefully, moving all receivers which 
+ *         still haven't read it to the next message.
+ *      2. Dispatcher waits until the oldest message is processed by all receivers.
+ *       This behavior is controlled by "overwriteOldest" switch.
+ *
+ *  - Constructor allows:
+ *    - initial buffer filling with messages to be processed first
+ *    - setting buffer size
+ *    - setting "overwriteOldest" switch
+ *    - custom verbose outputs for debug purposes.
+ */  
 template<class MessType>
 class MultiReceiverMessageService : public MessageService<MessType>{
 private:
