@@ -63,16 +63,15 @@ private:
     const bool overwriteOldest;
 
     // Message buffer and properties.
-    //std::vector< BufferElement< MessType > > ringBuffer;
     std::vector< MessType > ringBuffer;
 
     // Available region end and start positions (writePos and lastElemPos)
     size_t writePos = 0;
     size_t lastElemPos = 0;
 
-    // Counts how many rounds the lastElemPos has hit the position 0 - 
+    // DEPRECATED: Counts how many rounds the lastElemPos has hit the position 0 - 
     // How many full writes have occured.
-    size_t roundCount = 0;
+    //size_t roundCount = 0;
 
     // Indicates whether available region is splitted, i.e. latest elements are 
     // at the beginning, however there are still old elements at the end.
@@ -95,7 +94,7 @@ private:
 
     // Synchronizing variables. Protecc's several stuff.
     // Protects the message buffer and properties which are written at every call.
-    std::mutex mut;
+    mutable std::mutex mut;
 
     // Condvar on which receiver thread waits when there are no more elements to read.
     // Notified when new element is added to buffer.
@@ -109,9 +108,14 @@ private:
      *  Private functions assume that LOCK is ALREADY ACQUIRED.
      *
      * - Returns an iterator to std::shared_ptr to threadState object with id = id.
+     * - Const and Non-Const versions.
      *  @param id - Thread's ID.
      */ 
-    auto findReceiverThread( std::thread::id id ){
+    auto findReceiverThread( std::thread::id id ) {
+        return receiverThreads.find( std::make_shared< MultiReceiverThreadState >( id ) );
+    }
+
+    const auto findReceiverThread( std::thread::id id ) const {
         return receiverThreads.find( std::make_shared< MultiReceiverThreadState >( id ) );
     }
 
@@ -237,8 +241,8 @@ public:
             dispatchedMessageCount++;
 
             // Increment the round count if lastElemPos once again reached buffer start.
-            if( writePos == 0 )
-                roundCount++; 
+            //if( writePos == 0 )
+            //    roundCount++; 
 
             Util::vlog( 2, verb, "[dispatchMsg SUCC!]: (0x%p), writePos: %d, " \
                         "itemCount: %d, dispatchCount:%d\n", &ringBuffer[ writePos - 1 ], 
@@ -327,8 +331,8 @@ public:
         threadState->receiveCount++;
 
         // Synchronize RoundCount, after successfully extracted a message in current round.
-        if( threadState->currPos == 0)
-            threadState->roundCount = roundCount; 
+        //if( threadState->currPos == 0)
+        //    threadState->roundCount = roundCount; 
 
         Util::vlog( 2, verb, "[pollMsg SUCC!]: Thread %s RECEIVED message \"%s\".\n" \
                              "                 writePos: %d, currPos: %d, itemCount: %d\n", 
@@ -364,7 +368,8 @@ public:
         if( res.second ){
             // Set position in buffer and current buffer's write round count. 
             thState->currPos = lastElemPos;
-            thState->roundCount = roundCount;
+            thState->receiveCount = 0;
+            //thState->roundCount = roundCount;
 
             lastElemRemainingReaders++;
 
@@ -409,6 +414,50 @@ public:
 
         // To prevent DeadLocks, notify the waiters to check the dispatcherClosed condition.
         cond_newElemAdded.notify_all();
+    }
+
+    /*! Constant functions returning the state of service.
+     */ 
+    size_t getDispatchedMessageCount() const {
+        std::lock_guard< std::mutex > lock( mut );
+        return dispatchedMessageCount;
+    }
+
+    size_t getReceivedMessageCount( std::thread::id id ) const {
+        std::lock_guard< std::mutex > lock( mut );
+        auto&& thr = findReceiverThread( id );
+        if( thr != receiverThreads.end() ){
+            return (*thr)->receiveCount;
+        }
+        return 0;
+    }
+     
+    size_t getReceivedMessageCount() const {
+        return getReceivedMessageCount( std::this_thread::get_id() );
+    }
+
+    size_t getMessagesAhead( std::thread::id id ) const {
+        size_t messCount = getReceivedMessageCount( id );
+        // Lock now because we're accessing dispatchedMessageCount.
+        std::lock_guard< std::mutex > lock( mut );
+        return dispatchedMessageCount - messCount;
+    }
+
+    size_t getMessagesAhead() const {
+        return getMessagesAhead( std::this_thread::get_id() );
+    }
+
+    bool isSubscribed( std::thread::id id ) const {
+        std::lock_guard< std::mutex > lock( mut );
+        auto&& thr = findReceiverThread( id );
+        if( thr != receiverThreads.end() ){
+            return (*thr)->isSubscribed;
+        }
+        return false;
+    }
+
+    bool isSubscribed() const {
+        return isSubscribed( std::this_thread::get_id() );
     }
 
 };
