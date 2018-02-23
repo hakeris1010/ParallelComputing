@@ -8,7 +8,7 @@
 #include <cassert>
 #include "execution_time.hpp"
 
-template<class Element>
+/*template<class Element>
 class LabeledNodeBase {
 protected:
     LabeledNodeBase( long _label = 0, bool _ready = true ) : 
@@ -66,6 +66,7 @@ public:
         return data;
     }
 };
+*/
 
 struct Pixel{
     char red;
@@ -112,21 +113,24 @@ private:
     Data data;
 
 public:
-    std::atomic< long > label;
+    std::mutex mut;
 
-    // TODO: Something like this to track start node for the thresholded comparison.
-    //LabeledNode<Data>* regionsFirstNode;
+    // Label of this node. 
+    long label = 0;
 
-    volatile bool isReady;
+    // Original Node, used to track start node for the thresholded comparison.
+    LabeledNode<Data>* regionsFirstNode = nullptr;
+
+    volatile bool isReady = true;
     //std::condition_variable var;
 
     // Copy and move constructors.
-    LabeledNode( const Data& _data, long _label = 0, bool _ready = true )
-        : data( _data ), label( _label ), isReady( _ready )
+    LabeledNode( const Data& _data, long _label = 0, LabeledNode<Data>* firstNode = nullptr )
+        : data( _data ), label( _label ), regionsFirstNode( firstNode )
     {}
 
-    LabeledNode( Data&& _data, long _label = 0, bool _ready = true )
-        : data( std::move( _data ) ), label( _label ), isReady( _ready )
+    LabeledNode( Data&& _data, long _label = 0, LabeledNode<Data>* firstNode = nullptr )
+        : data( std::move( _data ) ), label( _label ), regionsFirstNode( firstNode )
     {}
 
     /*! Returns the const reference to data value of this node.
@@ -151,19 +155,77 @@ public:
 template< class Element, class NeigborGetter >
 class MatrixGraphTraverser{
 protected:
+    // A reference to a vector, which stores values in order simulating an 
+    // N-dimensional matrix, and dimensions of that matrix.
     const std::vector< Element >& matrix;
-    std::vector< size_t > dimensions;
+    const std::vector< size_t > dimensions;
+
+    // Offset in the "matrix" vector, and end-offset, indicating an end of the region.
+    // Both are inclusive - so endOffset values can be equal to offset values.
+    // Passed as a C-tor parameters.
+    const std::vector< size_t > offset;
+    const std::vector< size_t > endOffset;
+
+    // Non-Copyable switch - if true, this object can't be copy-constructed.
+    const bool nonCopyable;
+
+    // Current coordinates, in N-dimensional form.
     std::vector< size_t > coords;
+
+    // Current coordinates in "vector index" form.
     size_t index;
 
     // Function receiving coordinates of current element, and returning indexes of
     // neighboring elements. The indexes are computed autonomously.
     NeighborGetter getNeighborIndexes;
 
-    bool checkValidity(){
+    /*! Perform full validity test on the state of the traverser.
+     */ 
+    bool checkValidityFull(){
+        // Check coordinate vectors.
         assert( dimensions.size() == coords.size() );
+        assert( dimensions.size() == offset.size() );
+        assert( dimensions.size() == endOffset.size() );
+
+        // Check actual low-level index in the buffer.
+        assert( index < matrix.size() );
+
+        // Check if dimensions are correct.
+        size_t dimSize = 1;
+        for( auto dim : dimensions )
+            dimSize *= dim;
+
+        assert( dimSize == matrix.size() );
+        
+        // Check validities of offset coordinates.
+        int offsetIneqs = 0;
         for( size_t i = 0; i < coords.size(); i++ ){
-            assert( coords[ i ] < dimensions[ i ] );
+            // Offset coodinates must be lower than endOffset.
+            assert( offset[ i ] <= endOffset[ i ] );
+
+            // Log inequalities between coords, to check if the offsets were not equal.
+            if( offset[ i ] != endOffset[ i ] )
+                offsetIneqs++;
+
+            // And of course must be inside the dimensional space.
+            assert( offset[ i ] < dimensions[ i ] );
+            assert( endOffset[ i ] < dimensions[ i ] );
+
+            // Check if coordinates are between offsets.
+            assert( coords[ i ] >= offset[ i ] );
+            assert( coords[ i ] <= endOffset[ i ] );
+        }
+
+        // Offsets must not be equal.
+        assert( offsetIneqs != 0 );
+    }
+
+    /*! Checks if current Coordinates (coords) are between the offset values.
+     */ 
+    void checkCoordValidity(){
+        for( size_t i = 0; i < coords.size(); i++ ){
+            assert( coords[ i ] >= offset[ i ] );
+            assert( coords[ i ] <= endOffset[ i ] );
         }
     }
 
@@ -179,6 +241,7 @@ public:
      * @param mg - the traverser object with already set coords and dimensions.
      */ 
     static size_t getIndexFromCoords( const std::vector< size_t >& coords,
+                                      const std::vector< size_t >& offset,  
                                       const std::vector< size_t >& dimensions )
     {
         size_t index = 0;
@@ -187,7 +250,7 @@ public:
             for( size_t j = 0; j < i; j++ ){
                 tmp *= dimensions[ j ];
             }
-            tmp *= coords[ i ];
+            tmp *= (coords[ i ] + offset[ i ]);
 
             index += tmp;
         }
@@ -206,6 +269,7 @@ public:
      * @param mg - the traverser object with already set dimensions and index.
      */ 
     static std::vector< size_t > getCoordsFromIndex( size_t ind, 
+        const std::vector< size_t >& offset,  
         const std::vector< size_t >& dimensions )
     {
         std::vector< size_t > coords( dimensions.size() );
@@ -218,7 +282,7 @@ public:
             }
 
             // Compute coords and index in the next base.            
-            coords[ i ] = ind / tmp;
+            coords[ i ] = (ind / base) - offset[ i ];
             ind = ind % base;
         } 
 
@@ -231,32 +295,44 @@ public:
      * TODO: Construct missing elements (coords or index).
      */ 
     MatrixGraphTraverser( std::vector< Element >& _matrix, 
-                          const std::vector<size_t>& _dimensions,
-                          size_t _index,
-                          std::vector<size_t>&& _coords = std::vector<size_t>(),
-                          NeighborGetter neighGet = defaultNeighGetter )
-        : matrix( _matrix ), dimensions( _dimensions ), coords( std::move( _coords ) ),
-          index( _index ), getNeighborIndexes( neighGet )
-    {}
-    //{ getIndexFromCoords(); }
-    //{ checkValidity(); }
-
-    MatrixGraphTraverser( std::vector< Element >& _matrix, 
                           std::vector<size_t>&& _dimensions,
-                          size_t _index,
-                          std::vector<size_t>&& _coords = std::vector<size_t>(),
-                          NeighborGetter neighGet = defaultNeighGetter )
-        : matrix( _matrix ), dimensions( std::move( _dimensions ) ), 
-          coords( std::move( _coords ) ), index( _index ), 
+                          std::vector<size_t>&& _coords,
+                          std::vector<size_t>&& _offset = std::vector<size_t>(),
+                          std::vector<size_t>&& _endOffset = std::vector<size_t>(),
+                          NeighborGetter neighGet = defaultNeighGetter 
+                        )
+        : matrix( _matrix ), 
+          dimensions( std::move( _dimensions ) ), coords( std::move( _coords ) ), 
+          offset( offset.empty() ? std::vector<size_t>( dimensions.size() ) : 
+                                   std::move( offset ) ),
+          endOffset( endOffset.empty() ? std::vector<size_t>( dimensions.size() ) : 
+                                         std::move( endOffset ) ),   
+          index( getIndexFromCoords( coords, offset, dimensions ) ), 
           getNeighborIndexes( neighGet )
-    {}
+    { 
+        checkValidityFull(); 
+    }
 
-    // Force move constructor.
+    // Force move constructor - but just for the DEBUG stage, to ensure no copying is done.
     MatrixGraphTraverser( MatrixGraphTraverser< Element, NeigborGetter >&& ) = default; 
+    MatrixGraphTraverser( const MatrixGraphTraverser< Element, NeigborGetter >& ) = delete; 
 
     // Returns a Reference to object at this traverser's index.
     Element& getValue() const {
         return matrix[ index ];
+    }
+
+    // Goes forward.
+    void moveToNextElement( size_t direction ) {
+        // Move to the beginning of this direction, if space left,
+        // if not, reset current coordinate to zero, and move to the next direction.
+        for( size_t i = direction; i < coords.size(); i++ ){
+            if( coords[ i ] < endOffset[ i ] ){
+                coords[ i ]++;
+                return;
+            }
+            coords[ i ] = offset[ i ];
+        }
     }
 
     // Use Copy Elision feature of C++11 and newer versions to avoid copies.
