@@ -142,17 +142,47 @@ public:
     }
 };
 
+
+/*! Default matrix-style neighbor getter.
+ *  - A Neighbor is every element backwards/forwards from current element in a 
+ *    coordinate axis.
+ *  - For example, in 2D space, there are 4 neighbors: 
+ *    (x-1, y), (x+1, y), (x, y+1), (x, y-1).
+ */ 
+constexpr auto defaultMatrixNeighborGetter = []( 
+        const std::vector< size_t >& coords, auto callback ) -> void
+{
+    for( size_t i = 0; i < coords.size(); i++ ){
+        std::vector<size_t> tmp = coords;
+
+        // Increment and decrement current coordinate, threrefore access 2 neighbors
+        // in current axis. Callback doesn't modify the tmp - takes a const reference.
+        tmp[ i ] += 1;
+        callback( tmp );
+
+        tmp[ i ] -= 2;
+        callback( tmp );
+    }
+};
+
 /*! Structure for traversing the N-Dimensional Array/vector, 
  *  interpreting it as a graph, with custom neighbor getting function.
  *  - Is not thread safe. Must be assured that only one thread is manipulating 
  *    the traverser.
  *  @param NeighborGetter is a function of type:
- *      std::vector< size_t > neighborGetter( size_t currIndex, 
- *                                            const std::vector< size >& currCoords )
- *      - Returns already computed indexes of all neighbors, based on coordinates of 
- *        current element.
+ *
+ *      void neighborGetter( const std::vector< size_t >& coords, Callback callback )
+ *
+ *      - Computes the coordinates of all neighbors, based on coordinates of 
+ *        current element, and calls a "callback" on each iteration, passing the
+ *        coordinate of the neighbor.
+ *
+ *      @param Callback - a callable, used by the inner workings of this class,
+ *          getting the coordinates of a neighbor and performing jobs.
+ *
+ *      void Callback( const std::vector< size_t >& neighborCoords )
  */ 
-template< class Element, class NeigborGetter >
+template< class Element, class NeighborGetter >
 class MatrixGraphTraverser{
 protected:
     // A reference to a vector, which stores values in order simulating an 
@@ -222,11 +252,16 @@ protected:
 
     /*! Checks if current Coordinates (coords) are between the offset values.
      */ 
-    void checkCoordValidity(){
-        for( size_t i = 0; i < coords.size(); i++ ){
-            assert( coords[ i ] >= offset[ i ] );
-            assert( coords[ i ] <= endOffset[ i ] );
+    static bool checkCoordValidity( const std::vector< size_t >& _coords,
+                                    const std::vector< size_t >& _offset,  
+                                    const std::vector< size_t >& _endOffset )
+    {
+        for( size_t i = 0; i < _coords.size(); i++ ){
+            if( ( _coords[ i ] < _offset   [ i ] ) ||
+                ( _coords[ i ] > _endOffset[ i ] ) )
+                return false;
         }
+        return true;
     }
 
 public:
@@ -278,7 +313,7 @@ public:
             // Compute the base of coordinate i.
             size_t base = 1;
             for( size_t j = 0; j < i; j++ ){
-                base *= mg.dimensions[ j ];
+                base *= dimensions[ j ];
             }
 
             // Compute coords and index in the next base.            
@@ -299,7 +334,7 @@ public:
                           std::vector<size_t>&& _coords,
                           std::vector<size_t>&& _offset = std::vector<size_t>(),
                           std::vector<size_t>&& _endOffset = std::vector<size_t>(),
-                          NeighborGetter neighGet = defaultNeighGetter 
+                          NeighborGetter neighGet = defaultMatrixNeighborGetter
                         )
         : matrix( _matrix ), 
           dimensions( std::move( _dimensions ) ), coords( std::move( _coords ) ), 
@@ -314,8 +349,8 @@ public:
     }
 
     // Force move constructor - but just for the DEBUG stage, to ensure no copying is done.
-    MatrixGraphTraverser( MatrixGraphTraverser< Element, NeigborGetter >&& ) = default; 
-    MatrixGraphTraverser( const MatrixGraphTraverser< Element, NeigborGetter >& ) = delete; 
+    MatrixGraphTraverser( MatrixGraphTraverser< Element, NeighborGetter >&& ) = default; 
+    MatrixGraphTraverser( const MatrixGraphTraverser< Element, NeighborGetter >& ) = delete; 
 
     // Returns a Reference to object at this traverser's index.
     Element& getValue() const {
@@ -353,25 +388,31 @@ public:
      *    without the need to expose inner buffer to a neighbor getter.
      */
 
-    void getNeighborElements( std::vector< Element& >& vec ) const {
-        std::vector< size_t > neighInds = getNeighborIndexes( index, coords );
-        for( size_t i : neighInds ){
-            // Push a Reference to an element to a vector.
-            if( i < matrix.size() )
-                vec.push_back( matrix[ i ] );
-        }
+    void getNeighborElements( std::vector< Element& >& vec, bool checkCoords = true ) const {
+        // Call a neighborGetter which will compute coordinates of every neighbor and
+        // pass them to our callback.
+        getNeighborIndexes( coords, [ & ]( const std::vector<size_t>& neigh ){
+            if( checkCoords ){
+                if( !checkCoordValidity( neigh, this->offset, this->endOffset ) )
+                    return;
+            }
+            size_t indx = getIndexFromCoords( neigh, this->offset, this->dimensions );
+            if( indx < this->matrix.size() ){
+                vec.push_back( this->matrix[ indx ] );
+            }
+        } );
     }
 
-    void getNeighborElementsConst( std::vector< const Element& >& vec ) const {
+    /*void getNeighborElementsConst( std::vector< const Element& >& vec ) const {
         std::vector< size_t > neighInds = getNeighborIndexes( index, coords );
         for( size_t i : neighInds ){
             // Push a Const Reference to an element to a vector.
             if( i < matrix.size() )
                 vec.push_back( (const Element&)( matrix[ i ] ) );
         }
-    }
+    }*/
 
-    void getNeighborTraversers( std::vector< MatrixGraphTraverser >& vec ) const {
+    /*void getNeighborTraversers( std::vector< MatrixGraphTraverser >& vec ) const {
         std::vector< size_t > neighInds = getNeighborIndexes( index, coords );
         for( size_t i : neighInds ){
             // Create a Traverser, and push it to the thing.
@@ -385,14 +426,14 @@ public:
                 ) );
             }
         }
-    }
+    }*/
 
 };
 
 
 /*! Class used for multithreaded component labeling.
  */ 
-template< class Data, typename NeigborGetter = decltype( 2D_4Connection_Vector ) >
+/*template< class Data, typename NeigborGetter = decltype( 2D_4Connection_Vector ) >
 class ConnectedComponentLabeler {
 private:
     // The reference values for every label.
@@ -473,7 +514,7 @@ void labelStructure( ConnectedComponentLabeler& globalData,
         }
     }
 }
-
+*/
 
 
 /*void oneDimVector( std::vector<size_t> dimensions, size_t repeats ){
