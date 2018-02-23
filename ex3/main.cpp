@@ -303,10 +303,10 @@ public:
                         )
         : matrix( _matrix ), 
           dimensions( std::move( _dimensions ) ), coords( std::move( _coords ) ), 
-          offset( offset.empty() ? std::vector<size_t>( dimensions.size() ) : 
-                                   std::move( offset ) ),
-          endOffset( endOffset.empty() ? std::vector<size_t>( dimensions.size() ) : 
-                                         std::move( endOffset ) ),   
+          offset( _offset.empty() ? std::vector<size_t>( dimensions.size(), 0 ) : 
+                                    std::move( _offset ) ),
+          endOffset( _endOffset.empty() ? std::vector<size_t>( dimensions.size(), 0 ) : 
+                                          std::move( _endOffset ) ),   
           index( getIndexFromCoords( coords, offset, dimensions ) ), 
           getNeighborIndexes( neighGet )
     { 
@@ -329,17 +329,29 @@ public:
         for( size_t i = direction; i < coords.size(); i++ ){
             if( coords[ i ] < endOffset[ i ] ){
                 coords[ i ]++;
-                return;
+                break;
             }
             coords[ i ] = offset[ i ];
         }
+
+        // Compute index for actual element access from a matrix buffer.
+        index = getIndexFromCoords( coords, offset, dimensions );
     }
 
-    // Use Copy Elision feature of C++11 and newer versions to avoid copies.
+    // TODO (Maybe): Use Copy Elision feature of C++11 and newer versions to avoid copies.
     /*virtual std::vector< Element& > getNeighborElements() const = 0;
     virtual std::vector< const Element& > getNeighborElementsConst() const = 0;
-
     virtual std::vector< MatrixGraphTraverser > getNeighborTraversers() const = 0;*/
+
+    /*! Neighbor getters. 
+     * TODO: A good approach is to use a Callable parameter to pass to neighbor getter.
+     *  - This Callable will be called when each neighbor coordinate is created,
+     *    getting passed the same coordinate.
+     *  - The Callable will manage index computation and will get element from buffer.
+     *  - This way we have only one iteration through neighbor coordinates 
+     *    (instead of two), and we have the ability to dynamically check the coordinates
+     *    without the need to expose inner buffer to a neighbor getter.
+     */
 
     void getNeighborElements( std::vector< Element& >& vec ) const {
         std::vector< size_t > neighInds = getNeighborIndexes( index, coords );
