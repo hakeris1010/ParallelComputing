@@ -185,9 +185,11 @@ constexpr auto defaultMatrixNeighborGetter = [](
 template< class Element, class NeighborGetter = decltype( defaultMatrixNeighborGetter ) >
 class MatrixGraphTraverser{
 protected:
+    // TODO: Use simple pointer instead of vector.
     // A reference to a vector, which stores values in order simulating an 
     // N-dimensional matrix, and dimensions of that matrix.
-    const std::vector< Element >& matrix;
+    const Element* matrix;
+    const size_t matrixSize;
     const std::vector< size_t > dimensions;
 
     // Offset in the "matrix" vector, and end-offset, indicating an end of the region.
@@ -216,14 +218,14 @@ protected:
         assert( dimensions.size() == endOffset.size() );
 
         // Check actual low-level index in the buffer.
-        assert( index < matrix.size() );
+        assert( index < matrixSize );
 
         // Check if dimensions are correct.
         size_t dimSize = 1;
         for( auto dim : dimensions )
             dimSize *= dim;
 
-        assert( dimSize == matrix.size() );
+        assert( dimSize == matrixSize );
         
         // Check validities of offset coordinates.
         int offsetIneqs = 0;
@@ -339,17 +341,19 @@ public:
      * @param matrix - reference to an existing vector of elements
      * TODO: Construct missing elements (coords or index).
      */ 
-    MatrixGraphTraverser( std::vector< Element >& _matrix, 
+    MatrixGraphTraverser( const Element* _matrix, size_t _matrixSize,
                           std::vector<size_t>&& _dimensions,
-                          std::vector<size_t>&& _coords,
-                          std::vector<size_t>&& _offset = std::vector<size_t>(),
-                          std::vector<size_t>&& _endOffset = std::vector<size_t>(),
-                          NeighborGetter neighGet = defaultMatrixNeighborGetter
+                          std::vector<size_t>&& _coords     = std::vector<size_t>(),
+                          std::vector<size_t>&& _offset     = std::vector<size_t>(),
+                          std::vector<size_t>&& _endOffset  = std::vector<size_t>(),
+                          NeighborGetter neighGet           = defaultMatrixNeighborGetter
                         )
-        : matrix( _matrix ), 
-          dimensions( std::move( _dimensions ) ), coords( std::move( _coords ) ), 
+        : matrix( _matrix ), matrixSize( _matrixSize ),
+          dimensions( std::move( _dimensions ) ), 
+          coords( _coords.empty() ? std::vector<size_t>( dimensions.size(), 0 ) : 
+                                    std::move( _coords ) ), 
           offset( _offset.empty() ? std::vector<size_t>( dimensions.size(), 0 ) : 
-                                    std::move( _offset ) ),
+                                    std::move( _offset ) ),  
           endOffset( _endOffset.empty() ? getLastElementCoords( dimensions ) :
                                           std::move( _endOffset ) ), 
           getNeighborIndexes( neighGet )
@@ -361,6 +365,17 @@ public:
         checkValidityFull(); 
     }
 
+    MatrixGraphTraverser( const std::vector<Element>& _matrix, 
+                          std::vector<size_t>&& _dimensions,
+                          std::vector<size_t>&& _coords     = std::vector<size_t>(),
+                          std::vector<size_t>&& _offset     = std::vector<size_t>(),
+                          std::vector<size_t>&& _endOffset  = std::vector<size_t>(),
+                          NeighborGetter neighGet           = defaultMatrixNeighborGetter
+                        )    
+        : MatrixGraphTraverser( &(_matrix[0]), _matrix.size(), std::move( _dimensions ), 
+           std::move( _coords ), std::move( _offset ), std::move( _endOffset ), neighGet )
+    {}
+
     // Force move constructor - but just for the DEBUG stage, to ensure no copying is done.
     MatrixGraphTraverser( MatrixGraphTraverser< Element, NeighborGetter >&& ) = default; 
     MatrixGraphTraverser( const MatrixGraphTraverser< Element, NeighborGetter >& ) = delete; 
@@ -369,12 +384,12 @@ public:
      *  - Const and Non-Const versions.
      *  - Assumes that "index" is correct.
      */ 
-    const Element& getValue() const {
+    const Element& getValueConst() const {
         return matrix[ index ];
     }
-    /*Element& getValue() {
+    Element& getValue() {
         return matrix[ index ];
-    }*/
+    }
 
     /*! Returns current coordinates and index.
      */ 
@@ -454,11 +469,17 @@ public:
             // However if coords are not check'd, check da index.
             else{
                 size_t indx = getIndexFromCoords( neigh, this->offset, this->dimensions );
-                if( indx < this->matrix.size() ){
+                if( indx < this->matrixSize ){
                     vec.push_back( this->matrix[ indx ] );
                 }
             }
         } );
+    }
+
+    std::vector< Element& > getNeighborElements( bool checkCoords = true ) const {
+        std::vector< Element& > vec;
+        getNeighborElements( vec, checkCoords );
+        return vec;
     }
 
     /*void getNeighborElementsConst( std::vector< const Element& >& vec ) const {
@@ -665,53 +686,106 @@ std::ostream& operator<< ( std::ostream& os, const std::vector< auto >& vec ){
     return os;
 }
 
+// Test case data
+template< typename T, typename NG = decltype( defaultMatrixNeighborGetter ) >
+struct TestCase_MatrixGraphTraverser{
+    std::vector< T > data;
+    std::vector< size_t > dimensions;
+    std::vector< size_t > startCoords;
+    std::vector< size_t > offset;
+    std::vector< size_t > endOffset;
+    NG neighGetter;
+
+    TestCase_MatrixGraphTraverser( 
+            std::vector< T >&& _data,
+            std::vector< size_t >&& _dimensions,
+            std::vector< size_t >&& _startCoords = std::vector<size_t>(),
+            std::vector< size_t >&& _offset      = std::vector<size_t>(),
+            std::vector< size_t >&& _endOffset   = std::vector<size_t>(),
+            NG _neighGetter                      = defaultMatrixNeighborGetter 
+    )
+     : data( std::move( _data ) ), dimensions( std::move( _dimensions ) ), 
+       startCoords( std::move( _startCoords ) ), offset( std::move( _offset ) ),
+       endOffset( std::move( _endOffset ) ), neighGetter( _neighGetter )
+    {}
+
+    TestCase_MatrixGraphTraverser( const TestCase_MatrixGraphTraverser< T >& ) = delete;
+    TestCase_MatrixGraphTraverser( TestCase_MatrixGraphTraverser< T >&& ) = delete;
+    TestCase_MatrixGraphTraverser<T>& operator=( const TestCase_MatrixGraphTraverser< T >& ) = delete;
+    TestCase_MatrixGraphTraverser<T>& operator=( TestCase_MatrixGraphTraverser< T >&& ) = delete;
+};
+
 // Tests advancement
 template< typename T >
 class Test_MatrixGraphTraverser{
 private:
     const TestCase_MatrixGraphTraverser< T >& testCase;
-    MatrixGraphTraveser< T > trav;
+    MatrixGraphTraverser< T > trav;
 
 public:
-    TestCase_MatrixGraphTraverser( const TestCase_MatrixGraphTraverser< T >& tcase )
-     : testCase( tcase ), trav( testCase.data, testCase.dimensions, testCase.startCoords,
-                                testCase.offset, testCase.endOffset, testCase.neighGetter )
+    Test_MatrixGraphTraverser( const TestCase_MatrixGraphTraverser< T >& tcase )
+     : testCase( tcase ), trav( testCase.data, 
+        std::vector<size_t>( testCase.dimensions ), std::vector<size_t>( testCase.startCoords ),
+        std::vector<size_t>( testCase.offset ), std::vector<size_t>( testCase.endOffset ), 
+        testCase.neighGetter )
     {}
+
+    void checkCoords( const std::vector<size_t>& c1, const std::vector<size_t>& c2 ){
+        assert( c1.size() == c2.size() );
+        for( size_t i = 0; i < c1.size(); i++ ){
+            assert( c1[ i ] == c2[ i ] );
+        }
+    }
     
-    void advance( size_t offset = 0 ){
-        for( size_t i = offset; i < testData.size(); i++ ){
+    void advance( size_t offset = 0, int verbose = 0 ){
+        for( size_t i = offset; i < testCase.data.size(); i++ ){
+            if( verbose > 0 ){
+                std::cout<< "[ i: "<< i <<" ]:\n value: "<< trav.getValue() << "\n index: "
+                         << trav.getIndex() <<", coords: "<< trav.getCoords() <<"\n";
+                if( verbose > 1 )
+                    std::cout<< " neighbors: "<< trav.getNeighborElements() <<"\n";
+            }
+
             // Data and index must be compliant.
-            assert( trav.getValue() == testData[ i ] );
+            assert( trav.getValue() == testCase.data[ i ] );
             assert( trav.getIndex() == i );
 
-            // Advance must be successful
-            assert( trav.advance() );
+            // If not last, advance must be successful
+            if( i < testCase.data.size() - 1 )
+                assert( trav.advance() );
+            // If at the last element, advance must return false.
+            else
+                assert( !trav.advance() );
         }
-        // Now at the last element. Now advance must return false.
-        assert( !trav.advance() );
     }
 
+    void full( int verbose = 0 ){
+        advance();
+    }
 };
 
 // Tests the Traverser.
 void testTraverser(){
-    std::vector< int > tvec( {
+    const TestCase_MatrixGraphTraverser< int > tcase( {
         1,  2,  3,  4,  5, 
         6,  7,  8,  9,  10, 
         11, 12, 13, 14, 15,
         16, 17, 18, 19, 20
-    } );
+    }, { 5, 4 } 
+    );
 
-    // Construct.
-    MatrixGraphTraverser<int> trav( tvec, { 5, 4 }, { 0, 0 } );
+    Test_MatrixGraphTraverser<int>( tcase ).full();
 
-    std::cout << trav.getValue() <<"\n";
+    /*MatrixGraphTraverser<int> trav( tvec, { 5, 4 }, { 0, 0 } );
+
     std::cout << trav.getCoords() <<"\n\n";
+    std::cout << trav.getValue() <<"\n";
 
     trav.advance();
 
     std::cout << trav.getValue() <<"\n";
     std::cout << trav.getCoords() <<"\n\n";
+    */
 }
 
 int main(){
