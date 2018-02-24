@@ -182,7 +182,7 @@ constexpr auto defaultMatrixNeighborGetter = [](
  *
  *      void Callback( const std::vector< size_t >& neighborCoords )
  */ 
-template< class Element, class NeighborGetter >
+template< class Element, class NeighborGetter = decltype( defaultMatrixNeighborGetter ) >
 class MatrixGraphTraverser{
 protected:
     // A reference to a vector, which stores values in order simulating an 
@@ -196,9 +196,7 @@ protected:
     const std::vector< size_t > offset;
     const std::vector< size_t > endOffset;
 
-    // Non-Copyable switch - if true, this object can't be copy-constructed.
-    const bool nonCopyable;
-
+    // Modifiable properties.
     // Current coordinates, in N-dimensional form.
     std::vector< size_t > coords;
 
@@ -207,7 +205,7 @@ protected:
 
     // Function receiving coordinates of current element, and returning indexes of
     // neighboring elements. The indexes are computed autonomously.
-    NeighborGetter getNeighborIndexes;
+    const NeighborGetter getNeighborIndexes;
 
     /*! Perform full validity test on the state of the traverser.
      */ 
@@ -264,6 +262,18 @@ protected:
         return true;
     }
 
+    /*! Helps to Initialize endOffset to the end of matrix, if not set.
+     */ 
+    static std::vector< size_t > getLastElementCoords( 
+            const std::vector< size_t >& dimensions )
+    {
+        std::vector<size_t> coords;
+        for( auto d : dimensions ){
+            coords.push_back( d - 1 );
+        }
+        return coords;
+    }
+
 public:
     /*! Compute index of the element in N-dim vector.
      * Example 3D coordinates:
@@ -280,7 +290,7 @@ public:
                                       const std::vector< size_t >& dimensions )
     {
         size_t index = 0;
-        for( size_t i = coords.size() - 1; i >= 0; i-- ){
+        for( size_t i = coords.size() - 1; i < coords.size(); i-- ){
             size_t tmp = 1;
             for( size_t j = 0; j < i; j++ ){
                 tmp *= dimensions[ j ];
@@ -340,11 +350,14 @@ public:
           dimensions( std::move( _dimensions ) ), coords( std::move( _coords ) ), 
           offset( _offset.empty() ? std::vector<size_t>( dimensions.size(), 0 ) : 
                                     std::move( _offset ) ),
-          endOffset( _endOffset.empty() ? std::vector<size_t>( dimensions.size(), 0 ) : 
-                                          std::move( _endOffset ) ),   
-          index( getIndexFromCoords( coords, offset, dimensions ) ), 
+          endOffset( _endOffset.empty() ? getLastElementCoords( dimensions ) :
+                                          std::move( _endOffset ) ), 
           getNeighborIndexes( neighGet )
     { 
+        // Initialize index now because it depends on other properties.
+        index = getIndexFromCoords( coords, offset, dimensions );
+
+        // Check the validity of all properties to avoid errors later.
         checkValidityFull(); 
     }
 
@@ -379,26 +392,41 @@ public:
     virtual std::vector< MatrixGraphTraverser > getNeighborTraversers() const = 0;*/
 
     /*! Neighbor getters. 
-     * TODO: A good approach is to use a Callable parameter to pass to neighbor getter.
+     * FIXME: A good approach is to use a Callable parameter to pass to neighbor getter.
      *  - This Callable will be called when each neighbor coordinate is created,
      *    getting passed the same coordinate.
      *  - The Callable will manage index computation and will get element from buffer.
      *  - This way we have only one iteration through neighbor coordinates 
      *    (instead of two), and we have the ability to dynamically check the coordinates
      *    without the need to expose inner buffer to a neighbor getter.
+     *
+     * - This function calls a neighborGetter which will compute coordinates of 
+     *   every neighbor and pass them to our callback. 
+     *   Then we check them, and get elements.
+     * @param vec - ready-to-use vector to which we push neighboring elements.
+     * @param checkCoords - if set, function checks whether neighbor coordinates 
+     *        aren't out of offset-endOffset scope.
+     *        If not set, may return neighbors out of the mentioned scope. 
      */
-
-    void getNeighborElements( std::vector< Element& >& vec, bool checkCoords = true ) const {
-        // Call a neighborGetter which will compute coordinates of every neighbor and
-        // pass them to our callback.
+    void getNeighborElements( std::vector< Element& >& vec, bool checkCoords = true ) const 
+    {
         getNeighborIndexes( coords, [ & ]( const std::vector<size_t>& neigh ){
+            // If we check coordinates, just compute index and get an elem 'coz it's valid.
+            // This approach should be used when dealing with situations like
+            // out of offset scope -> not neighbor.
             if( checkCoords ){
                 if( !checkCoordValidity( neigh, this->offset, this->endOffset ) )
                     return;
-            }
-            size_t indx = getIndexFromCoords( neigh, this->offset, this->dimensions );
-            if( indx < this->matrix.size() ){
+
+                size_t indx = getIndexFromCoords( neigh, this->offset, this->dimensions );
                 vec.push_back( this->matrix[ indx ] );
+            }
+            // However if coords are not check'd, check da index.
+            else{
+                size_t indx = getIndexFromCoords( neigh, this->offset, this->dimensions );
+                if( indx < this->matrix.size() ){
+                    vec.push_back( this->matrix[ indx ] );
+                }
             }
         } );
     }
@@ -586,7 +614,7 @@ void twoDimVector( size_t wid, size_t hei, size_t repeats ){
     }
 }
 
-int main(){
+void runDimBenches(){
     size_t reps = 10000000;
     size_t wid = 10;
     size_t hei = 20;
@@ -595,6 +623,23 @@ int main(){
         oneDimVector, wid, hei, reps ).count() <<" s\n";
     std::cout<< "foo2() took "<< gtools::functionExecTime( 
         twoDimVector, wid, hei, reps ).count() <<" s\n";
+}
+
+// Tests the Traverser.
+void testTraverser(){
+    std::vector< int > tvec( {
+        1,  2,  3,  4,  5, 
+        6,  7,  8,  9,  10, 
+        11, 12, 13, 14, 15,
+        16, 17, 18, 19, 20
+    } );
+
+    // Construct.
+    MatrixGraphTraverser<int>( tvec, { 5, 4 }, { 0, 0 } );
+}
+
+int main(){
+    testTraverser();
 
     return 0;
 }
