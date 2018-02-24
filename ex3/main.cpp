@@ -365,18 +365,46 @@ public:
     MatrixGraphTraverser( MatrixGraphTraverser< Element, NeighborGetter >&& ) = default; 
     MatrixGraphTraverser( const MatrixGraphTraverser< Element, NeighborGetter >& ) = delete; 
 
-    // Returns a Reference to object at this traverser's index.
-    Element& getValue() const {
+    /*! Returns a Reference to object at this traverser's index.
+     *  - Const and Non-Const versions.
+     *  - Assumes that "index" is correct.
+     */ 
+    const Element& getValue() const {
         return matrix[ index ];
     }
+    /*Element& getValue() {
+        return matrix[ index ];
+    }*/
 
-    // Goes forward.
-    void moveToNextElement( size_t direction ) {
+    /*! Returns current coordinates and index.
+     */ 
+    std::vector< size_t > getCoords() const {
+        return coords;
+    }
+    size_t getIndex() const {
+        return index;
+    }
+
+    /*! Moves traverser's Current Element pointer forward:
+     *  - At first, attempts to move in the specified direction, and
+     *    if end of region is reached in this direction, advances by 1 in
+     *    the higher direction, and resets current direction.
+     *  - For example, let's move by 1 in X direction in 2-dimensional matrix.
+     *    End of region is reached. So X now = 0, and Y = Y + 1.
+     *
+     *  @param direction - index of dimension by which to advance.
+     *         Defaults to the first dimension (X axis).
+     *  @return true if advanced forward successfully, false if reached the end. 
+     *          If reached the end, the "coords" are reset to beginning offset.
+     */ 
+    bool advance( size_t direction = 0 ) {
         // Move to the beginning of this direction, if space left,
         // if not, reset current coordinate to zero, and move to the next direction.
+        bool advanced = false;
         for( size_t i = direction; i < coords.size(); i++ ){
             if( coords[ i ] < endOffset[ i ] ){
                 coords[ i ]++;
+                advanced = true;
                 break;
             }
             coords[ i ] = offset[ i ];
@@ -384,6 +412,8 @@ public:
 
         // Compute index for actual element access from a matrix buffer.
         index = getIndexFromCoords( coords, offset, dimensions );
+
+        return advanced;
     }
 
     // TODO (Maybe): Use Copy Elision feature of C++11 and newer versions to avoid copies.
@@ -625,6 +655,44 @@ void runDimBenches(){
         twoDimVector, wid, hei, reps ).count() <<" s\n";
 }
 
+// Prints a vector.
+std::ostream& operator<< ( std::ostream& os, const std::vector< auto >& vec ){
+    os <<"[ ";
+    for( auto&& el : vec ){
+        os << el <<", ";
+    }
+    os <<"]";
+    return os;
+}
+
+// Tests advancement
+template< typename T >
+class Test_MatrixGraphTraverser{
+private:
+    const TestCase_MatrixGraphTraverser< T >& testCase;
+    MatrixGraphTraveser< T > trav;
+
+public:
+    TestCase_MatrixGraphTraverser( const TestCase_MatrixGraphTraverser< T >& tcase )
+     : testCase( tcase ), trav( testCase.data, testCase.dimensions, testCase.startCoords,
+                                testCase.offset, testCase.endOffset, testCase.neighGetter )
+    {}
+    
+    void advance( size_t offset = 0 ){
+        for( size_t i = offset; i < testData.size(); i++ ){
+            // Data and index must be compliant.
+            assert( trav.getValue() == testData[ i ] );
+            assert( trav.getIndex() == i );
+
+            // Advance must be successful
+            assert( trav.advance() );
+        }
+        // Now at the last element. Now advance must return false.
+        assert( !trav.advance() );
+    }
+
+};
+
 // Tests the Traverser.
 void testTraverser(){
     std::vector< int > tvec( {
@@ -635,7 +703,15 @@ void testTraverser(){
     } );
 
     // Construct.
-    MatrixGraphTraverser<int>( tvec, { 5, 4 }, { 0, 0 } );
+    MatrixGraphTraverser<int> trav( tvec, { 5, 4 }, { 0, 0 } );
+
+    std::cout << trav.getValue() <<"\n";
+    std::cout << trav.getCoords() <<"\n\n";
+
+    trav.advance();
+
+    std::cout << trav.getValue() <<"\n";
+    std::cout << trav.getCoords() <<"\n\n";
 }
 
 int main(){
