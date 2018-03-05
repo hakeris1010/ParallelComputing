@@ -6,7 +6,7 @@
 #include <mutex>
 #include <memory>
 #include <cassert>
-//#include <functional>
+#include <unordered_set>
 #include "execution_time.hpp"
 
 
@@ -395,9 +395,31 @@ protected:
         return true;
     }
 
+    /*! Child Traverser Spawning constructor.
+     *  - Used when spawning another traverser in the same context as current one,
+     *    just different coordinates.
+     *  - Is usually used when spawning child traversers pointing to neighbors of 
+     *    current traverser's pointed element.
+     *  @param parent - a parent traverser from which the region context 
+     *                  pointer will be acquired from.
+     *  @param coords - coordinates of element to point to.
+     *  @param check - if set, will perform coordinate check on coords.
+     */ 
+    MatrixGraphTraverser( const MatrixGraphTraverser< Element, NeighborGetter >& parent,
+                          const std::vector<size_t>& _coords, bool check = false )
+        : m( parent.m ), coords( std::move( _coords ) ), 
+          index( getIndexFromCoords( coords, m->dimensions ) )
+    { 
+        if( check )
+            checkCoordValidity( coords, m->offset, m->endOffset );
+    }
+
 public:
-    /*! Copy and move constructors.
-     * @param matrix - reference to an existing vector of elements
+    /*! Original Traverser constructors.
+     * Create the "Original" traverser with it's own separate region context. 
+     * - Region-context params passed in construction will be used to create a 
+     *   New Region Context structure - so this traverser will be the "original" one.
+     * @param _matrix - a pointer to a block of memory containing the matrix data.
      */ 
     MatrixGraphTraverser( Element* _matrix, size_t _matrixSize, 
                           std::vector<size_t>&& _dimensions,
@@ -409,7 +431,8 @@ public:
                         )
         : m( std::make_shared< const MatrixTraverserRegion< Element, NeighborGetter > >(
                 _matrix, _matrixSize, std::move( _dimensions ), std::move( _offset ), 
-                std::move( _endOffset ), useCoordChecking, neighGet ) ),   
+                std::move( _endOffset ), useCoordChecking, neighGet ) 
+           ),   
           coords( _coords.empty() ? std::vector<size_t>( m->dimensions.size(), 0 ) : 
                                     std::move( _coords ) ), 
           index( getIndexFromCoords( coords, m->dimensions ) )
@@ -543,9 +566,13 @@ public:
     }
 
     /*! Gets traversers pointing to neighbors.
-     *  TODO: Make the matrix-properties section of traverser be independent.
+     *  - We're using Child Spawn constructor - we use the same region context as current
+     *    (same 'm' pointer), but we change the coordinates we're pointing to - in this case,
+     *    to a neighbor.
      */ 
-    void getNeighborTraversers( std::vector< MatrixGraphTraverser< Element > >& vec ) const {
+    void getNeighborTraversers( 
+            std::vector< MatrixGraphTraverser< Element, NeighborGetter > >& vec ) const 
+    {
         m->getNeighborIndexes( coords, m->offset, m->endOffset, 
         [ & ]( const std::vector<size_t>& neigh, bool checked = false ){
             size_t indx;
@@ -567,15 +594,18 @@ public:
                 indx = getIndexFromCoords( neigh, this->m->dimensions );
             }
             // At this point we're sure index is in matrix's memscope.
-            // Copy current traverser, and only change the coords and index.
-            /*MatrixGraphTraverser< Element > neighTrav( *this );
-            neighTrav.coords = neigh;
-            neighTrav.index = indx;
-
-            // Move to vector.
-            vec.push_back( std::move( neighTrav ) ); 
-            */
+            // Copy current traverser's context, and only change the coords and index.
+            vec.push_back( MatrixGraphTraverser< Element, NeighborGetter >( *this, neigh ) );
         } );
+    }
+
+    /*! Gets neighbor traversers using C++11 Copy Elision (Returns by Value).
+     *  @Return a vector of child traversers pointing to neighboring elements.
+     */ 
+    std::vector< MatrixGraphTraverser<Element, NeighborGetter> > getNeighborTraversers() const{
+        std::vector< MatrixGraphTraverser< Element, NeighborGetter > > vec; 
+        getNeighborTraversers( vec );
+        return vec;
     }
 
 };
@@ -805,7 +835,7 @@ struct TestCase_MatrixGraphTraverser{
     NG neighGetter;
 
     // Testing-against expected values.
-    std::vector< std::vector< T > > neighbors;
+    std::vector< std::unordered_multiset< T > > neighbors;
     std::vector< T > subRegionElements;
     bool contiguous;
 
@@ -879,7 +909,18 @@ public:
 
             // Check neighbors if been specified.
             if( i < testCase.neighbors.size() ){
-                assert( testCase.neighbors[ i ] == trav.getNeighborElements() );
+                // Check neighbor element references.
+                auto&& neighVec = trav.getNeighborElements();
+                auto&& mset = std::unordered_multiset< T >( neighVec.begin(), neighVec.end() );
+                assert( testCase.neighbors[ i ] == mset );
+
+                // Check neighbor traversers.
+                auto&& neighTravs = trav.getNeighborTraversers();
+                std::unordered_multiset< T > travSet;
+                for( auto&& a : neighTravs ){
+                    travSet.insert( a.getValue() );
+                }
+                assert( testCase.neighbors[ i ] == travSet );
             }
 
             // Data and index must be compliant.
@@ -917,6 +958,8 @@ void testTraverser(){
     testSubregion.offset = { 1, 1 };
     testSubregion.endOffset = { 3, 3 };
     testSubregion.subRegionElements = { 7, 8, 9, 12, 13, 14, 17, 18, 19 };
+    testSubregion.neighbors = { {12,8}, {7,13,9}, {8,14}, {7, 13, 17}, 
+        {12, 8, 14, 18}, {9, 13, 19}, {12, 18}, {17, 19, 13}, {18, 14 } };
 
     {
         std::cout << "\n=====================\nTest contiguous version.\n";
