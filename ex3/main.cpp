@@ -135,7 +135,7 @@ struct MatrixTraverserRegion{
     // simulating an N-dimensional matrix. The memory block could be taken from a 
     // std::vector, or from a C-array.
     // TODO: Make Constness-Independent iterator-type container.
-    mutable Element* matrix;
+    Element* matrix;
 
     // Matrix properties: size of a memory block containing it, and dimensions of a matrix.
     size_t matrixSize;
@@ -218,7 +218,13 @@ struct MatrixTraverserRegion{
           endOffsetIndex( getStartEndIndexes( false, offset, endOffset, dimensions ) ),
           checkCoords( useCoordChecking ? true : endOffsetIndex == 0 ),
           getNeighborIndexes( neighGet )
-    { }
+    {
+        std::cout<<"Constructed a Traverser Region Context.\n"; 
+    }
+
+    ~MatrixTraverserRegion(){
+        std::cout<<"~DeStructed a Traverser Region Context.\n"; 
+    }
 };
 
 
@@ -457,8 +463,8 @@ public:
     {}
 
     // Force move constructor - but just for the DEBUG stage, to ensure no copying is done.
-    //MatrixGraphTraverser( MatrixGraphTraverser< Element, NeighborGetter >&& ) = default; 
-    //MatrixGraphTraverser( const MatrixGraphTraverser< Element, NeighborGetter >& ) = delete; 
+    MatrixGraphTraverser( MatrixGraphTraverser< Element, NeighborGetter >&& ) = default; 
+    MatrixGraphTraverser( const MatrixGraphTraverser< Element, NeighborGetter >& ) = delete; 
 
     /*! Returns a Reference to object at this traverser's index.
      *  - Const and Non-Const versions.
@@ -859,6 +865,7 @@ struct TestCase_MatrixGraphTraverser{
     {}
 };
 
+
 // Tests advancement
 template< typename T >
 class Test_MatrixGraphTraverser{
@@ -866,8 +873,10 @@ private:
     TestCase_MatrixGraphTraverser< T > testCase;
     MatrixGraphTraverser< T > trav;
 
-    void createTraverser(){
-        trav = std::move( MatrixGraphTraverser< T >( 
+    static MatrixGraphTraverser<T> createTraverser( 
+            const TestCase_MatrixGraphTraverser<T>& testCase)
+    {
+        return MatrixGraphTraverser< T >( 
             testCase.refData.data, 
             std::vector<size_t>( testCase.refData.dimensions ), 
             std::vector<size_t>( testCase.startCoords ),
@@ -875,34 +884,18 @@ private:
             std::vector<size_t>( testCase.endOffset ), 
             testCase.useCoordChecking,
             testCase.neighGetter
-        ) );
+        );
     }
 
 public:
     // Copy 'n' Move Constructors.
     Test_MatrixGraphTraverser( TestCase_MatrixGraphTraverser< T >&& tcase )
-     : testCase( std::move( tcase ) ), trav(
-        testCase.refData.data, 
-        std::vector<size_t>( testCase.refData.dimensions ), 
-        std::vector<size_t>( testCase.startCoords ),
-        std::vector<size_t>( testCase.offset ), 
-        std::vector<size_t>( testCase.endOffset ), 
-        testCase.useCoordChecking,
-        testCase.neighGetter
-       ) 
-    { }
+     : testCase( std::move( tcase ) ), trav( createTraverser( testCase ) )
+    {}
 
     Test_MatrixGraphTraverser( const TestCase_MatrixGraphTraverser< T >& tcase )
-     : testCase( tcase ), trav(
-        testCase.refData.data, 
-        std::vector<size_t>( testCase.refData.dimensions ), 
-        std::vector<size_t>( testCase.startCoords ),
-        std::vector<size_t>( testCase.offset ), 
-        std::vector<size_t>( testCase.endOffset ), 
-        testCase.useCoordChecking,
-        testCase.neighGetter
-       ) 
-    { }
+     : testCase( tcase ), trav( createTraverser( testCase ) )
+    {}
     
     void advance( int verbose = 0, size_t offset = 0 ){
         // Set reference to expected region values. If subregion's values weren't set,
@@ -956,7 +949,7 @@ public:
 
 // Tests the Traverser.
 void testTraverser(){
-    int verbosity = 2;
+    int verbosity = 1;
 
     std::vector< Test_MatrixGraphTraverser_DataVector< std::string > > tDatas( {
         // 2D grid
@@ -1024,7 +1017,7 @@ void testTraverser(){
                          testCases[i].name << "\n";
 
         auto tester = Test_MatrixGraphTraverser<std::string>( std::move( testCases[i] ) );
-        tester.full( verbosity );
+        tester.full( verbosity - 1 );
     }
 }
 
