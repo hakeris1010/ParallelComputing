@@ -90,22 +90,32 @@ public:
  *    coordinate axis.
  *  - For example, in 2D space, there are 4 neighbors: 
  *    (x-1, y), (x+1, y), (x, y+1), (x, y-1).
- *
- *  FIXME: BUG: Returns neighbors from previous row too!!!
+ *  - The Default Getter is Checked - to ensure maximum optimizeishon.
+ *  - Takes a Pass-By-Value coordinates, because this way we have only one copy,
+ *    and modify the coordinates on the go, with every neighbor being a tweaked value 
+ *    in the same memory block.
  */ 
 constexpr auto defaultMatrixNeighborGetter = []( 
-        const std::vector< size_t >& coords, auto callback ) -> void
+        std::vector< size_t > coords,
+        const std::vector< size_t >& startRegion,  
+        const std::vector< size_t >& endRegion, 
+        auto callback ) -> void 
 {
     for( size_t i = 0; i < coords.size(); i++ ){
-        std::vector<size_t> tmp = coords;
-
         // Increment and decrement current coordinate, threrefore access 2 neighbors
-        // in current axis. Callback doesn't modify the tmp - takes a const reference.
-        tmp[ i ] += 1;
-        callback( tmp );
+        // in current axis. Callback doesn't modify the coords - takes a const reference.
+        // - We notify the callback that the value is "checked".
+        if( coords[ i ] < endRegion[ i ] ){
+            coords[ i ] += 1;
+            callback( coords, true );
+            coords[ i ] -= 1;
+        }
 
-        tmp[ i ] -= 2;
-        callback( tmp );
+        if( coords[ i ] > startRegion[ i ] ){
+            coords[ i ] -= 1;
+            callback( coords, true );
+            coords[ i ] += 1;
+        }
     }
 };
 
@@ -125,7 +135,7 @@ constexpr auto defaultMatrixNeighborGetter = [](
  *      @param Callback - a callable, used by the inner workings of this class,
  *          getting the coordinates of a neighbor and performing jobs.
  *
- *      void Callback( const std::vector< size_t >& neighborCoords )
+ *      void Callback( const std::vector< size_t >& neighborCoords, bool checkingDone = false )
  */ 
 template< class Element, class NeighborGetter = decltype( defaultMatrixNeighborGetter ) >
 class MatrixGraphTraverser{
@@ -318,6 +328,31 @@ protected:
         return coords;
     }
 
+    /*! More optimized and "checked" non-static index getter.
+     *  - Calculates the index from current coords, while at the same time, checking
+     *    if it's valid.
+     *  @param _coords - N-dimensional coordinates of the element.
+     *  @param a reference to the variable to store index in.
+     *  @return true, if calculated index is valid.
+     */ 
+    bool getIndexFromCoords_Checked( const std::vector< size_t >& _coords, size_t& index ){
+        index = 0;
+        for( size_t i = _coords.size() - 1; i < _coords.size(); i-- ){
+            // Check for this axis's coord's validity (is in bounds).
+            if( _coords[ i ] < offset[ i ] || _coords[ i ] > endOffset[ i ] )
+                return false;
+
+            // Calculate the i'th block to be added.
+            size_t tmp = 1;
+            for( size_t j = 0; j < i; j++ ){
+                tmp *= dimensions[ j ];
+            }
+            tmp *= _coords[ i ]; 
+            index += tmp;
+        }
+        // Success. Index is valid!
+        return true;
+    }
 
 public:
     /*! Copy and move constructors.
@@ -325,11 +360,12 @@ public:
      * @param matrix - reference to an existing vector of elements
      * TODO: Construct missing elements (coords or index).
      */ 
-    MatrixGraphTraverser( Element* _matrix, size_t _matrixSize,
+    MatrixGraphTraverser( Element* _matrix, size_t _matrixSize, 
                           std::vector<size_t>&& _dimensions,
                           std::vector<size_t>&& _coords     = std::vector<size_t>(),
                           std::vector<size_t>&& _offset     = std::vector<size_t>(),
                           std::vector<size_t>&& _endOffset  = std::vector<size_t>(),
+                          bool useCoordChecking             = true, 
                           NeighborGetter neighGet           = defaultMatrixNeighborGetter
                         )
         : matrix( _matrix ), matrixSize( _matrixSize ),
@@ -342,7 +378,7 @@ public:
                                           std::move( _endOffset ) ), 
           offsetIndex( getStartEndIndexes( true, offset, endOffset, dimensions ) ),
           endOffsetIndex( getStartEndIndexes( false, offset, endOffset, dimensions ) ),
-          checkCoords( endOffsetIndex == 0 ),
+          checkCoords( useCoordChecking ? true : endOffsetIndex == 0 ),
           getNeighborIndexes( neighGet )
     { 
         // Initialize index now because it depends on other properties.
@@ -352,15 +388,19 @@ public:
         checkValidityFull(); 
     }
 
+    /*! Vector-data constructor. Uses data from the vector as matrix.
+     */ 
     MatrixGraphTraverser( std::vector<Element>& _matrix, 
                           std::vector<size_t>&& _dimensions,
                           std::vector<size_t>&& _coords     = std::vector<size_t>(),
                           std::vector<size_t>&& _offset     = std::vector<size_t>(),
                           std::vector<size_t>&& _endOffset  = std::vector<size_t>(),
+                          bool useCoordChecking             = true, 
                           NeighborGetter neighGet           = defaultMatrixNeighborGetter
                         )    
         : MatrixGraphTraverser( &(_matrix[0]), _matrix.size(), std::move( _dimensions ), 
-           std::move( _coords ), std::move( _offset ), std::move( _endOffset ), neighGet )
+           std::move( _coords ), std::move( _offset ), std::move( _endOffset ), 
+           useCoordChecking, neighGet )
     {}
 
     // Force move constructor - but just for the DEBUG stage, to ensure no copying is done.
@@ -386,6 +426,8 @@ public:
     std::vector< size_t > getDimensions() const { return dimensions; }
     std::vector< size_t > getOffset()     const { return offset; }
     std::vector< size_t > getEndOffset()  const { return endOffset; }
+
+    bool usingContiguousRegion() const { return !checkCoords; }
 
     /*! Moves traverser's Current Element pointer forward:
      *  - At first, attempts to move in the specified direction, and
@@ -434,24 +476,32 @@ public:
      */
     void getNeighborElements( std::vector< std::reference_wrapper< Element > >& vec )
     {
-        getNeighborIndexes( coords, [ & ]( const std::vector<size_t>& neigh ){
-            // If we check coordinates, just compute index and get an elem 'coz it's valid.
-            // This approach should be used when dealing with situations like
-            // out of offset scope -> not neighbor.
-            if( this->checkCoords ){
-                if( checkCoordValidity( neigh, this->offset, this->endOffset ) ){
-                    size_t indx = getIndexFromCoords( neigh, this->dimensions );
-                    vec.push_back( this->matrix[ indx ] );
-                }
-            }
-            // However if available region is contiguous, we can only check
-            // the indexed of the start and end of the region.
-            else{
-                size_t indx = getIndexFromCoords( neigh, this->dimensions );
+        getNeighborIndexes( coords, offset, endOffset, 
+        [ & ]( const std::vector<size_t>& neigh, bool checked = false ){
+            // If neighborGetter hasn't already checked coordinates for us.
+            if( !checked ){
+                // This approach should be used when dealing with situations like
+                // out of offset scope -> not neighbor.
+                //if( this->checkCoords ){
+                    size_t indx;
+                    if( getIndexFromCoords_Checked( neigh, indx ) )
+                        vec.push_back( this->matrix[ indx ] );
+                    return;
+                //}
+                // TODO: This looks like totally obsolete solution because of cheap checking.
+                // However if available region is contiguous, we can only check
+                // the indexed of the start and end of the region.
+                /*size_t indx = getIndexFromCoords( neigh, this->dimensions );
                 if( this->offsetIndex <= indx && indx <= this->endOffsetIndex ){
                     vec.push_back( this->matrix[ indx ] );
                 }
+                return;
+                */
             }
+            // Coords were already checked. We're sure index is in matrix's memscope.
+            // If not, that's neighGetter's fault.
+            size_t indx = getIndexFromCoords( neigh, this->dimensions );
+            vec.push_back( this->matrix[ indx ] ); 
         } );
     }
 
@@ -687,6 +737,7 @@ struct TestCase_MatrixGraphTraverser{
     std::vector< size_t > startCoords;
     std::vector< size_t > offset;
     std::vector< size_t > endOffset;
+    bool useCoordChecking;
     NG neighGetter;
 
     TestCase_MatrixGraphTraverser( 
@@ -694,19 +745,13 @@ struct TestCase_MatrixGraphTraverser{
             std::vector< size_t >&& _startCoords = std::vector<size_t>(),
             std::vector< size_t >&& _offset      = std::vector<size_t>(),
             std::vector< size_t >&& _endOffset   = std::vector<size_t>(),
+            bool useCoordChecking                = true,
             NG _neighGetter                      = defaultMatrixNeighborGetter 
     )
      : refData( _refData ), 
        startCoords( std::move( _startCoords ) ), offset( std::move( _offset ) ),
        endOffset( std::move( _endOffset ) ), neighGetter( _neighGetter )
     {}
-
-    /*
-    TestCase_MatrixGraphTraverser( const TestCase_MatrixGraphTraverser< T >& ) = delete;
-    TestCase_MatrixGraphTraverser( TestCase_MatrixGraphTraverser< T >&& ) = delete;
-    TestCase_MatrixGraphTraverser<T>& operator=( const TestCase_MatrixGraphTraverser< T >& ) = delete;
-    TestCase_MatrixGraphTraverser<T>& operator=( TestCase_MatrixGraphTraverser< T >&& ) = delete;
-    */
 };
 
 
@@ -725,6 +770,7 @@ public:
         std::vector<size_t>( testCase.startCoords ),
         std::vector<size_t>( testCase.offset ), 
         std::vector<size_t>( testCase.endOffset ), 
+        testCase.useCoordChecking,
         testCase.neighGetter )
     {}
 
