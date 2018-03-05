@@ -6,6 +6,7 @@
 #include <mutex>
 #include <memory>
 #include <cassert>
+//#include <functional>
 #include "execution_time.hpp"
 
 
@@ -406,8 +407,8 @@ public:
     {}
 
     // Force move constructor - but just for the DEBUG stage, to ensure no copying is done.
-    MatrixGraphTraverser( MatrixGraphTraverser< Element, NeighborGetter >&& ) = default; 
-    MatrixGraphTraverser( const MatrixGraphTraverser< Element, NeighborGetter >& ) = delete; 
+    //MatrixGraphTraverser( MatrixGraphTraverser< Element, NeighborGetter >&& ) = default; 
+    //MatrixGraphTraverser( const MatrixGraphTraverser< Element, NeighborGetter >& ) = delete; 
 
     /*! Returns a Reference to object at this traverser's index.
      *  - Const and Non-Const versions.
@@ -514,6 +515,9 @@ public:
         return vec;
     }
 
+    /*! Gets traversers pointing to neighbors.
+     *  TODO: Make the matrix-properties section of traverser be independent.
+     */ 
     void getNeighborTraversers( std::vector< MatrixGraphTraverser< Element > >& vec ) const {
         getNeighborIndexes( coords, offset, endOffset, 
         [ & ]( const std::vector<size_t>& neigh, bool checked = false ){
@@ -725,7 +729,30 @@ std::ostream& operator<< ( std::ostream& os, const std::vector< auto >& vec ){
     return os;
 }
 
-// Test case data
+// Helper for checking vectors of equal types.
+template<typename T>
+bool operator==( const std::vector< T >& vec, 
+                 const std::vector< std::reference_wrapper<T> >& refVec ){
+    if( vec.size() != refVec.size() )
+        return false;
+    for( size_t i = 0; i < vec.size(); i++ ){
+        if( vec[ i ] != refVec[ i ].get() )
+            return false;
+    }
+    return true;
+}
+
+template<typename T>
+bool operator==( const std::vector< std::reference_wrapper<T> >& refVec, 
+                 const std::vector< T >& vec ){
+    return vec == refVec;
+}
+
+/*! Test framework for Matrix Graph Traverser.
+ *  Includes:
+ *  - Data Vector properties (dimensions and vector containing data)
+ *  - Test case (ctor params and valid data to check against).
+ */ 
 template< typename T >
 struct Test_MatrixGraphTraverser_DataVector{
     std::vector< T > data;
@@ -739,28 +766,28 @@ struct Test_MatrixGraphTraverser_DataVector{
 
 template< typename T, typename NG = decltype( defaultMatrixNeighborGetter ) >
 struct TestCase_MatrixGraphTraverser{
+    // Actual matrix.
     Test_MatrixGraphTraverser_DataVector< T >& refData;
     
+    // MatrixGraphTraverser construction params
     std::vector< size_t > startCoords;
     std::vector< size_t > offset;
     std::vector< size_t > endOffset;
-    bool useCoordChecking;
+    bool useCoordChecking = true;
     NG neighGetter;
+
+    // Testing-against expected values.
+    std::vector< std::vector< T > > neighbors;
+    std::vector< T > subRegionElements;
+    bool contiguous;
 
     TestCase_MatrixGraphTraverser( 
             Test_MatrixGraphTraverser_DataVector< T >& _refData,
-            std::vector< size_t >&& _startCoords = std::vector<size_t>(),
-            std::vector< size_t >&& _offset      = std::vector<size_t>(),
-            std::vector< size_t >&& _endOffset   = std::vector<size_t>(),
-            bool useCoordChecking                = true,
-            NG _neighGetter                      = defaultMatrixNeighborGetter 
+            bool _contiguous, NG _neighGetter = defaultMatrixNeighborGetter 
     )
-     : refData( _refData ), 
-       startCoords( std::move( _startCoords ) ), offset( std::move( _offset ) ),
-       endOffset( std::move( _endOffset ) ), neighGetter( _neighGetter )
+     : refData( _refData ), neighGetter( _neighGetter ), contiguous( _contiguous )
     {}
 };
-
 
 // Tests advancement
 template< typename T >
@@ -769,27 +796,51 @@ private:
     TestCase_MatrixGraphTraverser< T > testCase;
     MatrixGraphTraverser< T > trav;
 
+    void createTraverser(){
+        trav = std::move( MatrixGraphTraverser< T >( 
+            testCase.refData.data, 
+            std::vector<size_t>( testCase.refData.dimensions ), 
+            std::vector<size_t>( testCase.startCoords ),
+            std::vector<size_t>( testCase.offset ), 
+            std::vector<size_t>( testCase.endOffset ), 
+            testCase.useCoordChecking,
+            testCase.neighGetter
+        ) );
+    }
+
 public:
+    // Copy 'n' Move Constructors.
     Test_MatrixGraphTraverser( TestCase_MatrixGraphTraverser< T >&& tcase )
-     : testCase( std::move( tcase ) ), 
-       trav( testCase.refData.data, 
+     : testCase( std::move( tcase ) ), trav(
+        testCase.refData.data, 
         std::vector<size_t>( testCase.refData.dimensions ), 
         std::vector<size_t>( testCase.startCoords ),
         std::vector<size_t>( testCase.offset ), 
         std::vector<size_t>( testCase.endOffset ), 
         testCase.useCoordChecking,
-        testCase.neighGetter )
-    {}
+        testCase.neighGetter
+       ) 
+    { }
 
-    void checkCoordEquality( const std::vector<size_t>& c1, const std::vector<size_t>& c2 ){
-        assert( c1.size() == c2.size() );
-        for( size_t i = 0; i < c1.size(); i++ ){
-            assert( c1[ i ] == c2[ i ] );
-        }
-    }
+    Test_MatrixGraphTraverser( const TestCase_MatrixGraphTraverser< T >& tcase )
+     : testCase( tcase ), trav(
+        testCase.refData.data, 
+        std::vector<size_t>( testCase.refData.dimensions ), 
+        std::vector<size_t>( testCase.startCoords ),
+        std::vector<size_t>( testCase.offset ), 
+        std::vector<size_t>( testCase.endOffset ), 
+        testCase.useCoordChecking,
+        testCase.neighGetter
+       ) 
+    { }
     
     void advance( int verbose = 0, size_t offset = 0 ){
-        for( size_t i = offset; i < testCase.refData.data.size(); i++ ){
+        // Set reference to expected region values. If subregion's values weren't set,
+        // it means we are checking the whole region.
+        auto&& regionExpected = ( testCase.subRegionElements.empty() ?
+                                  testCase.refData.data : testCase.subRegionElements );
+        // Do it!
+        for( size_t i = offset; i < regionExpected.size(); i++ ){
             if( verbose > 0 ){
                 std::cout<< "[ i: "<< i <<" ]:\n value: "<< trav.getValue() << "\n index: "
                          << trav.getIndex() <<", coords: "<< trav.getCoords() <<"\n";
@@ -798,12 +849,18 @@ public:
                 }
             }
 
+            // Check neighbors if been specified.
+            if( i < testCase.neighbors.size() ){
+                assert( testCase.neighbors[ i ] == trav.getNeighborElements() );
+            }
+
             // Data and index must be compliant.
-            assert( trav.getValue() == testCase.refData.data[ i ] );
-            assert( trav.getIndex() == i );
+            assert( trav.getValue() == regionExpected[ i ] );
+            if( testCase.contiguous )
+                assert( trav.getIndex() == i );
 
             // If not last, advance must be successful
-            if( i < testCase.refData.data.size() - 1 )
+            if( i < regionExpected.size() - 1 )
                 assert( trav.advance() );
             // If at the last element, advance must return false.
             else
@@ -812,7 +869,7 @@ public:
     }
 
     void full( int verbose = 0 ){
-        advance();
+        advance( verbose );
     }
 };
 
@@ -825,20 +882,24 @@ void testTraverser(){
         16, 17, 18, 19, 20
     }, { 5, 4 } 
     );
+    TestCase_MatrixGraphTraverser<int> testContiguous( tcase, true );
 
-    auto tester = Test_MatrixGraphTraverser<int>( TestCase_MatrixGraphTraverser<int>( tcase ) );
-    tester.advance( 2 );
+    TestCase_MatrixGraphTraverser<int> testSubregion( tcase, false );
+    testSubregion.startCoords = { 1, 1 };
+    testSubregion.offset = { 1, 1 };
+    testSubregion.endOffset = { 3, 3 };
+    testSubregion.subRegionElements = { 7, 8, 9, 12, 13, 14, 17, 18, 19 };
 
-    /*MatrixGraphTraverser<int> trav( tvec, { 5, 4 }, { 0, 0 } );
-
-    std::cout << trav.getCoords() <<"\n\n";
-    std::cout << trav.getValue() <<"\n";
-
-    trav.advance();
-
-    std::cout << trav.getValue() <<"\n";
-    std::cout << trav.getCoords() <<"\n\n";
-    */
+    {
+        std::cout << "\n=====================\nTest contiguous version.\n";
+        auto tester = Test_MatrixGraphTraverser<int>( testContiguous );
+        tester.advance( 2 );
+    }
+    {
+        std::cout << "\n=====================\nTest Subregion (1,1)-(3,3) version.\n";
+        auto tester = Test_MatrixGraphTraverser<int>( std::move(testSubregion) );
+        tester.advance( 2 ); 
+    }
 }
 
 int main(){
