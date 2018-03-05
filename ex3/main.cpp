@@ -786,6 +786,15 @@ std::ostream& operator<< ( std::ostream& os, const std::vector< auto >& vec ){
     os <<"]";
     return os;
 }
+std::ostream& operator<< ( std::ostream& os, 
+        const std::vector< std::reference_wrapper< auto > >& vec ){
+    os <<"[ ";
+    for( auto&& el : vec ){
+        os << el.get() <<", ";
+    }
+    os <<"]";
+    return os;
+}
 
 // Helper for checking vectors of equal types.
 template<typename T>
@@ -839,11 +848,14 @@ struct TestCase_MatrixGraphTraverser{
     std::vector< T > subRegionElements;
     bool contiguous;
 
+    std::string name;
+
     TestCase_MatrixGraphTraverser( 
-            Test_MatrixGraphTraverser_DataVector< T >& _refData,
-            bool _contiguous, NG _neighGetter = defaultMatrixNeighborGetter 
+            Test_MatrixGraphTraverser_DataVector< T >& _refData, bool _contiguous, 
+            std::string&& _name = "", NG _neighGetter = defaultMatrixNeighborGetter 
     )
-     : refData( _refData ), neighGetter( _neighGetter ), contiguous( _contiguous )
+     : refData( _refData ), neighGetter( _neighGetter ), contiguous( _contiguous ),
+       name( std::move( _name ) )
     {}
 };
 
@@ -944,32 +956,75 @@ public:
 
 // Tests the Traverser.
 void testTraverser(){
-    Test_MatrixGraphTraverser_DataVector< int > tcase( {
-        1,  2,  3,  4,  5, 
-        6,  7,  8,  9,  10, 
-        11, 12, 13, 14, 15,
-        16, 17, 18, 19, 20
-    }, { 5, 4 } 
-    );
-    TestCase_MatrixGraphTraverser<int> testContiguous( tcase, true );
+    int verbosity = 2;
 
-    TestCase_MatrixGraphTraverser<int> testSubregion( tcase, false );
-    testSubregion.startCoords = { 1, 1 };
-    testSubregion.offset = { 1, 1 };
-    testSubregion.endOffset = { 3, 3 };
-    testSubregion.subRegionElements = { 7, 8, 9, 12, 13, 14, 17, 18, 19 };
-    testSubregion.neighbors = { {12,8}, {7,13,9}, {8,14}, {7, 13, 17}, 
-        {12, 8, 14, 18}, {9, 13, 19}, {12, 18}, {17, 19, 13}, {18, 14 } };
+    std::vector< Test_MatrixGraphTraverser_DataVector< std::string > > tDatas( {
+        // 2D grid
+        Test_MatrixGraphTraverser_DataVector< std::string >( {
+            "1",  "2",  "3",  "4",  "5", 
+            "6",  "7",  "8",  "9",  "10", 
+            "11", "12", "13", "14", "15",
+            "16", "17", "18", "19", "20"
+        }, { 5, 4 } ),
+         
+        // Test 3D case - Rubik's Cube.
+        Test_MatrixGraphTraverser_DataVector< std::string >( {
+            "312", "21", "214",
+            "31",   "1",  "14",
+            "315", "51", "514",
+
+            "32",  "2",  "24",
+            "3",   "C",   "4",
+            "35",  "5",  "54",
+
+            "362", "26", "264",
+            "36",   "6",  "64",
+            "365", "56", "564", 
+        }, { 3, 3, 3 } )
+    } );
+
+    // Test cases to be computed.
+    // 2D cases
+    std::vector< TestCase_MatrixGraphTraverser<std::string> > testCases( {
+        TestCase_MatrixGraphTraverser<std::string>( tDatas[0], true, "Contiguous 2D" ),
+    } );
 
     {
-        std::cout << "\n=====================\nTest contiguous version.\n";
-        auto tester = Test_MatrixGraphTraverser<int>( testContiguous );
-        tester.advance( 2 );
+    TestCase_MatrixGraphTraverser<std::string> tmp(tDatas[0], false,"Mid-Region 2D");
+    tmp.startCoords = { 1, 1 };
+    tmp.offset = { 1, 1 };
+    tmp.endOffset = { 3, 3 };
+    tmp.subRegionElements = { "7", "8", "9", "12", "13", "14", "17", "18", "19" };
+    tmp.neighbors = { {"12","8"}, {"7","13","9"}, {"8","14"}, {"7", "13", "17"}, 
+        {"12", "8", "14", "18"}, {"9", "13", "19"}, {"12", "18"}, {"17", "19", "13"}, 
+        {"18", "14" } };
+
+    testCases.push_back( std::move( tmp ) );
     }
+    // 3D cases
+    testCases.push_back( TestCase_MatrixGraphTraverser<std::string>( tDatas[1], true, 
+                         "Contiguous 3D Rubik's Cube" ) );
     {
-        std::cout << "\n=====================\nTest Subregion (1,1)-(3,3) version.\n";
-        auto tester = Test_MatrixGraphTraverser<int>( std::move(testSubregion) );
-        tester.advance( 2 ); 
+    TestCase_MatrixGraphTraverser<std::string> tmp( tDatas[1], false, "Mid-Region 3D Cube");
+    tmp.startCoords = { 1, 1, 1 };
+    tmp.offset = { 1, 1, 1 };
+    tmp.endOffset = { 2, 2, 2 };
+    tmp.subRegionElements = { "C", "4", "5", "54", 
+                              "6", "64", "56", "564" };
+    tmp.neighbors = { {"4","5","6"}, {"C","54","64"}, {"C","54","56"}, {"5","4","564"},
+                      {"56","64","C"}, {"6","564","4"}, {"6","564","5"}, {"64","56","54"} };
+    
+    testCases.push_back( std::move( tmp ) );
+    }
+
+    // Launch all tests.
+    for( size_t i = 0; i < testCases.size(); i++ ){
+        if( verbosity > 0 )
+            std::cout << "\n=====================\nTest #"<< i <<": "<< 
+                         testCases[i].name << "\n";
+
+        auto tester = Test_MatrixGraphTraverser<std::string>( std::move( testCases[i] ) );
+        tester.full( verbosity );
     }
 }
 
