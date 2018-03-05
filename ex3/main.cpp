@@ -408,8 +408,8 @@ public:
                           NeighborGetter neighGet           = defaultMatrixNeighborGetter
                         )
         : m( std::make_shared< const MatrixTraverserRegion< Element, NeighborGetter > >(
-                _matrix, _matrixSize, _dimensions, _offset, _endOffset, 
-                useCoordChecking, neighGet ) ),   
+                _matrix, _matrixSize, std::move( _dimensions ), std::move( _offset ), 
+                std::move( _endOffset ), useCoordChecking, neighGet ) ),   
           coords( _coords.empty() ? std::vector<size_t>( m->dimensions.size(), 0 ) : 
                                     std::move( _coords ) ), 
           index( getIndexFromCoords( coords, m->dimensions ) )
@@ -503,14 +503,14 @@ public:
      */
     void getNeighborElements( std::vector< std::reference_wrapper< Element > >& vec ) const
     {
-        getNeighborIndexes( coords, m->offset, m->endOffset, 
+        m->getNeighborIndexes( coords, m->offset, m->endOffset, 
         [ & ]( const std::vector<size_t>& neigh, bool checked = false ){
             // If neighborGetter hasn't already checked coordinates for us.
             if( !checked ){
                 //std::cout<< "Non-Checked.\n";
 
                 // Checking coords if available region is not contguous.
-                if( this->checkCoords ){
+                if( this->m->checkCoords ){
                     size_t indx;
                     if( getIndexFromCoords_Checked( neigh, indx ) )
                         vec.push_back( this->m->matrix[ indx ] );
@@ -546,7 +546,7 @@ public:
      *  TODO: Make the matrix-properties section of traverser be independent.
      */ 
     void getNeighborTraversers( std::vector< MatrixGraphTraverser< Element > >& vec ) const {
-        getNeighborIndexes( coords, m->offset, m->endOffset, 
+        m->getNeighborIndexes( coords, m->offset, m->endOffset, 
         [ & ]( const std::vector<size_t>& neigh, bool checked = false ){
             size_t indx;
             if( !checked ){
@@ -817,7 +817,6 @@ struct TestCase_MatrixGraphTraverser{
     {}
 };
 
-/*
 // Tests advancement
 template< typename T >
 class Test_MatrixGraphTraverser{
@@ -930,10 +929,10 @@ void testTraverser(){
         tester.advance( 2 ); 
     }
 }
-*/
+
 
 int main(){
-    //testTraverser();
+    testTraverser();
 
     return 0;
 }
