@@ -119,7 +119,6 @@ constexpr auto defaultMatrixNeighborGetter = [](
     }
 };
 
-
 /*! Structure for traversing the N-Dimensional Array/vector, 
  *  interpreting it as a graph, with custom neighbor getting function.
  *  - Is not thread safe. Must be assured that only one thread is manipulating 
@@ -145,7 +144,7 @@ protected:
     // simulating an N-dimensional matrix. The memory block could be taken from a 
     // std::vector, or from a C-array.
     // TODO: Make Constness-Independent iterator-type container.
-    Element* matrix;
+    mutable Element* matrix;
 
     // Matrix properties: size of a memory block containing it, and dimensions of a matrix.
     const size_t matrixSize;
@@ -165,6 +164,10 @@ protected:
     // Set to false when available region (endOffset - offset) is the whole matrix.
     const bool checkCoords;
 
+    // Function receiving coordinates of current element, and returning indexes of
+    // neighboring elements. The indexes are computed autonomously.
+    const NeighborGetter getNeighborIndexes; 
+
     //======== Modifiable properties ========//
     
     // Current coordinates, in N-dimensional form.
@@ -173,13 +176,11 @@ protected:
     // Current coordinates in "vector index" form.
     size_t index;
 
-    // Function receiving coordinates of current element, and returning indexes of
-    // neighboring elements. The indexes are computed autonomously.
-    const NeighborGetter getNeighborIndexes;
+    //======== Private Methods ========//
 
     /*! Perform full validity test on the state of the traverser.
      */ 
-    bool checkValidityFull(){
+    bool checkValidityFull() const {
         // Check coordinate vectors.
         assert( dimensions.size() == coords.size() );
         assert( dimensions.size() == offset.size() );
@@ -335,7 +336,8 @@ protected:
      *  @param a reference to the variable to store index in.
      *  @return true, if calculated index is valid.
      */ 
-    bool getIndexFromCoords_Checked( const std::vector< size_t >& _coords, size_t& index ){
+    bool getIndexFromCoords_Checked( const std::vector< size_t >& _coords, 
+                                     size_t& index ) const {
         index = 0;
         for( size_t i = _coords.size() - 1; i < _coords.size(); i-- ){
             // Check for this axis's coord's validity (is in bounds).
@@ -411,10 +413,7 @@ public:
      *  - Const and Non-Const versions.
      *  - Assumes that "index" is correct.
      */ 
-    const Element& getValue() const {
-        return matrix[ index ];
-    }
-    Element& getValue() {
+    Element& getValue() const {
         return matrix[ index ];
     }
 
@@ -474,30 +473,31 @@ public:
      *   Then we check them, and get elements.
      * @param vec - ready-to-use vector to which we push neighboring elements.
      */
-    void getNeighborElements( std::vector< std::reference_wrapper< Element > >& vec )
+    void getNeighborElements( std::vector< std::reference_wrapper< Element > >& vec ) const
     {
         getNeighborIndexes( coords, offset, endOffset, 
         [ & ]( const std::vector<size_t>& neigh, bool checked = false ){
             // If neighborGetter hasn't already checked coordinates for us.
             if( !checked ){
-                // This approach should be used when dealing with situations like
-                // out of offset scope -> not neighbor.
-                //if( this->checkCoords ){
+                //std::cout<< "Non-Checked.\n";
+
+                // Checking coords if available region is not contguous.
+                if( this->checkCoords ){
                     size_t indx;
                     if( getIndexFromCoords_Checked( neigh, indx ) )
                         vec.push_back( this->matrix[ indx ] );
                     return;
-                //}
-                // TODO: This looks like totally obsolete solution because of cheap checking.
+                } 
                 // However if available region is contiguous, we can only check
                 // the indexed of the start and end of the region.
-                /*size_t indx = getIndexFromCoords( neigh, this->dimensions );
+                size_t indx = getIndexFromCoords( neigh, this->dimensions );
                 if( this->offsetIndex <= indx && indx <= this->endOffsetIndex ){
                     vec.push_back( this->matrix[ indx ] );
                 }
                 return;
-                */
             }
+            //std::cout<< "Checked!\n";
+
             // Coords were already checked. We're sure index is in matrix's memscope.
             // If not, that's neighGetter's fault.
             size_t indx = getIndexFromCoords( neigh, this->dimensions );
@@ -508,36 +508,43 @@ public:
     /*! Gets neighbors using C++11 Copy Elision (Returns by Value).
      *  @Return a vector of references to neighboring elements.
      */ 
-    std::vector< std::reference_wrapper< Element > > getNeighborElements(){
+    std::vector< std::reference_wrapper< Element > > getNeighborElements() const {
         std::vector< std::reference_wrapper< Element > > vec;
         getNeighborElements( vec );
         return vec;
     }
 
-    /*void getNeighborElementsConst( std::vector< const Element& >& vec ) const {
-        std::vector< size_t > neighInds = getNeighborIndexes( index, coords );
-        for( size_t i : neighInds ){
-            // Push a Const Reference to an element to a vector.
-            if( i < matrix.size() )
-                vec.push_back( (const Element&)( matrix[ i ] ) );
-        }
-    }*/
-
-    /*void getNeighborTraversers( std::vector< MatrixGraphTraverser >& vec ) const {
-        std::vector< size_t > neighInds = getNeighborIndexes( index, coords );
-        for( size_t i : neighInds ){
-            // Create a Traverser, and push it to the thing.
-            if( i < matrix.size() ){
-                vec.push_back( MatrixGraphTraverser< Element, NeigborGetter >(
-                    matrix,
-                    dimensions,
-                    index,
-                    getCoordsFromIndex( i, dimensions ),
-                    getNeighborIndexes
-                ) );
+    void getNeighborTraversers( std::vector< MatrixGraphTraverser< Element > >& vec ) const {
+        getNeighborIndexes( coords, offset, endOffset, 
+        [ & ]( const std::vector<size_t>& neigh, bool checked = false ){
+            size_t indx;
+            if( !checked ){
+                // Checking coords if available region is not contguous.
+                if( this->checkCoords ){
+                    if( !getIndexFromCoords_Checked( neigh, indx ) )
+                        return;
+                }
+                // Check only the indexes of the start and end of the region if contiguous.
+                else { 
+                    indx = getIndexFromCoords( neigh, this->dimensions );
+                    if( indx < this->offsetIndex || indx > this->endOffsetIndex )
+                        return;
+                }
             }
-        }
-    }*/
+            // Coords were already checked in the neigh.getter.
+            else{
+                indx = getIndexFromCoords( neigh, this->dimensions );
+            }
+            // At this point we're sure index is in matrix's memscope.
+            // Copy current traverser, and only change the coords and index.
+            MatrixGraphTraverser< Element > neighTrav( *this );
+            neighTrav.coords = neigh;
+            neighTrav.index = indx;
+
+            // Move to vector.
+            vec.push_back( std::move( neighTrav ) ); 
+        } );
+    }
 
 };
 
