@@ -1033,18 +1033,30 @@ public:
 
             // Check neighbors if been specified.
             if( i < testCase.neighbors.size() ){
-                // Check neighbor element references.
-                auto&& neighVec = trav.getNeighborElements();
-                auto&& mset = std::unordered_multiset< T >( neighVec.begin(), neighVec.end() );
-                assert( testCase.neighbors[ i ] == mset );
-
-                // Check neighbor traversers.
-                auto&& neighTravs = trav.getNeighborTraversers();
-                std::unordered_multiset< T > travSet;
-                for( auto&& a : neighTravs ){
-                    travSet.insert( a.getValue() );
+                {
+                    // Check neighbor element references.
+                    auto&& neighVec = trav.getNeighborElements();
+                    auto&& mset = std::unordered_multiset< T >( neighVec.begin(), neighVec.end() );
+                    assert( testCase.neighbors[ i ] == mset );
                 }
-                assert( testCase.neighbors[ i ] == travSet );
+                {
+                    // Check neighbor traversers.
+                    auto&& neighTravs = trav.getNeighborTraversers();
+                    std::unordered_multiset< T > travSet;
+                    for( auto&& a : neighTravs ){
+                        travSet.insert( a.getValue() );
+                    }
+                    assert( testCase.neighbors[ i ] == travSet );
+                }
+                {
+                    // Check base traversers.
+                    auto&& baseTravs = trav.getNeighborBaseTraversers();
+                    std::unordered_multiset< T > baseTravSet;
+                    for( auto&& a : baseTravs ){
+                        baseTravSet.insert( a->getValue() );
+                    }
+                    assert( testCase.neighbors[ i ] == baseTravSet ); 
+                }
             }
 
             // Data and index must be compliant.
