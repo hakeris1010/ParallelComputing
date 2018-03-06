@@ -7,6 +7,7 @@
 #include <memory>
 #include <cassert>
 #include <unordered_set>
+#include "GraphTraverser.hpp"
 #include "execution_time.hpp"
 
 
@@ -268,7 +269,7 @@ struct MatrixTraverserRegion{
  *      void Callback( const std::vector< size_t >& neighborCoords, bool checkingDone = false )
  */ 
 template< class Element, class NeighborGetter = decltype( defaultMatrixNeighborGetter ) >
-class MatrixGraphTraverser{
+class MatrixGraphTraverser : public GraphTraverser< Element >{
 protected:
     // A pointer to a Matrix Properties object of the original traverser.
     const std::shared_ptr< const MatrixTraverserRegion< Element, NeighborGetter > > m;
@@ -560,6 +561,14 @@ public:
         return advanced;
     }
 
+    /*! Attempts to move current element's pointer to a neigbor specified by index.
+     *  @param neighborIndex - index in the neighbor vector to be returned by 
+     *                         the neighbor getter lambda.
+     */ 
+    void moveToNeighbor( const size_t neighborIndex ){
+
+    }
+
     /*! Neighbor getters. 
      * A good approach is to use a Callable parameter to pass to neighbor getter.
      *  - This Callable will be called when each neighbor coordinate is created,
@@ -656,6 +665,12 @@ public:
         std::vector< MatrixGraphTraverser< Element, NeighborGetter > > vec; 
         getNeighborTraversers( vec );
         return vec;
+    }
+
+    /*! Base traverser's interface method - get base traversers pointing to neighbors.
+     */  
+    std::vector< std::shared_ptr<GraphTraverser<Element>> > getNeighborBaseTraversers() const {
+    
     }
 
 };
