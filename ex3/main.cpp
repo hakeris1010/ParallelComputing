@@ -109,13 +109,15 @@ constexpr auto defaultMatrixNeighborGetter = [](
         // - We notify the callback that the value is "checked".
         if( coords[ i ] < endRegion[ i ] ){
             coords[ i ] += 1;
-            callback( coords, true );
+            if( !callback( coords, true ) )
+                break;
             coords[ i ] -= 1;
         }
 
         if( coords[ i ] > startRegion[ i ] ){
             coords[ i ] -= 1;
-            callback( coords, true );
+            if( !callback( coords, true ) )
+                break;
             coords[ i ] += 1;
         }
     }
@@ -265,8 +267,10 @@ struct MatrixTraverserRegion{
  *
  *      @param Callback - a callable, used by the inner workings of this class,
  *          getting the coordinates of a neighbor and performing jobs.
+ *          Returns false if no more neighbor getting is required (no more calls 
+ *          to this callback are expected), true otherwise.
  *
- *      void Callback( const std::vector< size_t >& neighborCoords, bool checkingDone = false )
+ *      bool Callback( const std::vector< size_t >& neighborCoords, bool checkingDone = false )
  */ 
 template< class Element, class NeighborGetter = decltype( defaultMatrixNeighborGetter ) >
 class MatrixGraphTraverser : public GraphTraverser< Element >{
@@ -566,7 +570,29 @@ public:
      *                         the neighbor getter lambda.
      */ 
     void moveToNeighbor( const size_t neighborIndex ){
+        size_t cind = 0;
+        m->getNeighborIndexes( coords, m->offset, m->endOffset, 
+        [ & ]( const std::vector<size_t>& neigh, bool checked = false ){
+            // If current neighbor is the one wanted:
+            if( cind == neighborIndex ){
+                size_t indx;
+                if( !checked ){
+                    if( !this->getIndexFromCoords_Checked( neigh, indx ) )
+                        return false;
+                }
+                else
+                    indx = getIndexFromCoordsBlocks( neigh, this->m->dimBlocks );
 
+                // Now we know neigh coords are good.
+                // Update object's coordinates and index.
+                this->coords = neigh;
+                this->index = indx;
+
+                return false;
+            }
+            cind++;
+            return true;
+        } );
     }
 
     /*! Neighbor getters. 
@@ -596,7 +622,7 @@ public:
                     size_t indx;
                     if( getIndexFromCoords_Checked( neigh, indx ) )
                         vec.push_back( this->m->matrix[ indx ] );
-                    return;
+                    return true;
                 } 
                 // However if available region is contiguous, we can only check
                 // the indexed of the start and end of the region.
@@ -604,7 +630,7 @@ public:
                 if( this->m->offsetIndex <= indx && indx <= this->m->endOffsetIndex ){
                     vec.push_back( this->m->matrix[ indx ] );
                 }
-                return;
+                return true;
             }
             //std::cout<< "Checked!\n";
 
@@ -612,6 +638,7 @@ public:
             // If not, that's neighGetter's fault.
             size_t indx = getIndexFromCoordsBlocks( neigh, this->m->dimBlocks );
             vec.push_back( this->m->matrix[ indx ] ); 
+            return true;
         } );
     }
 
@@ -639,13 +666,13 @@ public:
                 // Checking coords if available region is not contguous.
                 if( this->m->checkCoords ){
                     if( !getIndexFromCoords_Checked( neigh, indx ) )
-                        return;
+                        return true;
                 }
                 // Check only the indexes of the start and end of the region if contiguous.
                 else { 
                     indx = getIndexFromCoordsBlocks( neigh, this->m->dimBlocks );
                     if( indx < this->m->offsetIndex || indx > this->m->endOffsetIndex )
-                        return;
+                        return true;
                 }
             }
             // Coords were already checked in the neigh.getter.
@@ -655,6 +682,7 @@ public:
             // At this point we're sure index is in matrix's memscope.
             // Copy current traverser's context, and only change the coords and index.
             vec.push_back( MatrixGraphTraverser< Element, NeighborGetter >( *this, neigh ) );
+            return true;
         } );
     }
 
@@ -669,8 +697,40 @@ public:
 
     /*! Base traverser's interface method - get base traversers pointing to neighbors.
      */  
-    std::vector< std::shared_ptr<GraphTraverser<Element>> > getNeighborBaseTraversers() const {
-    
+    std::vector< std::shared_ptr< GraphTraverser< Element > > > 
+                 getNeighborBaseTraversers() const 
+    {
+        std::vector< std::shared_ptr< GraphTraverser< Element > > > baseTraversers;
+
+        m->getNeighborIndexes( coords, m->offset, m->endOffset, 
+        [ & ]( const std::vector<size_t>& neigh, bool checked = false ){
+            size_t indx;
+            if( !checked ){
+                // Checking coords if available region is not contguous.
+                if( this->m->checkCoords ){
+                    if( !getIndexFromCoords_Checked( neigh, indx ) )
+                        return true;
+                }
+                // Check only the indexes of the start and end of the region if contiguous.
+                else { 
+                    indx = getIndexFromCoordsBlocks( neigh, this->m->dimBlocks );
+                    if( indx < this->m->offsetIndex || indx > this->m->endOffsetIndex )
+                        return true;
+                }
+            }
+            // Coords were already checked in the neigh.getter.
+            else{
+                indx = getIndexFromCoordsBlocks( neigh, this->m->dimBlocks );
+            }
+            // At this point we're sure index is in matrix's memscope.
+            // Copy current traverser's context, and only change the coords and index.
+            baseTraversers.push_back( std::shared_ptr< GraphTraverser< Element > >( 
+                new MatrixGraphTraverser< Element, NeighborGetter >( *this, neigh ) ) );
+            
+            return true;
+        } );
+
+        return baseTraversers;
     }
 
 };
