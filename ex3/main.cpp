@@ -141,6 +141,11 @@ struct MatrixTraverserRegion{
     size_t matrixSize;
     std::vector< size_t > dimensions;
 
+    // Dimensional block sizes: the size of block each dimension's unit occupies.
+    // E.g. dimension X: 1 unit, dimension Y: X units, dimension Z: X*Y units.
+    // Precomputed at start, and used later when dereferencing elements from coords.
+    std::vector< size_t > dimBlocks;
+
     // Offset in the "matrix" vector, and end-offset, indicating an end of the region.
     // Both are inclusive - so endOffset values can be equal to offset values.
     // Passed as a C-tor parameters.
@@ -198,6 +203,22 @@ struct MatrixTraverserRegion{
         return ( blockSize * (endOffset[ i ] + 1) ) - 1;
     } 
 
+    /*! Computes dimensional block sizes.
+     * @param dims - vector of dimensions.
+     * @return block size vector with indexes corresponding to each dimension.
+     */
+    static std::vector< size_t > getDimBlocks( const std::vector< size_t >& dimensions ){
+        std::vector< size_t > dimBlocks( dimensions.size() );
+        for( size_t i = 0; i < dimensions.size(); i++ ){
+            size_t tmp = 1;
+            for( size_t j = 0; j < i; j++ ){
+                tmp *= dimensions[ j ];
+            }
+            dimBlocks[ i ] = tmp;
+        }
+        return dimBlocks;
+    }
+
     /*! Move constructor. Creates this "properties" structure by moving
      *  all passed data to our containers.
      */ 
@@ -210,6 +231,7 @@ struct MatrixTraverserRegion{
                          )
         : matrix( _matrix ), matrixSize( _matrixSize ),
           dimensions( std::move( _dimensions ) ), 
+          dimBlocks( getDimBlocks( dimensions ) ),
           offset( _offset.empty() ? std::vector<size_t>( dimensions.size(), 0 ) : 
                                     std::move( _offset ) ),  
           endOffset( _endOffset.empty() ? getLastElementCoords( dimensions ) :
@@ -323,11 +345,12 @@ protected:
      * coord = X*Y*(z) + X*(y) + x;
      * - X, Y and Z are the dimensions of a hypercube vector.
      *
-     * @param mg - the traverser object with already set coords and dimensions.
+     * 2 versions - with precomputed block sizes and with dynamically computed.
+     * @param dimensions - dimensions of a matrix.
+     * @param dimBlocks - block sizes of each dimension.
      */ 
-    static size_t getIndexFromCoords( const std::vector< size_t >& coords,
-                                      const std::vector< size_t >& dimensions )
-    {
+    static size_t getIndexFromCoordsDimensions( const std::vector< size_t >& coords,
+                                            const std::vector< size_t >& dimensions ) {
         size_t index = 0;
         for( size_t i = coords.size() - 1; i < coords.size(); i-- ){
             size_t tmp = 1;
@@ -342,6 +365,15 @@ protected:
         return index;
     }
 
+    static size_t getIndexFromCoordsBlocks( const std::vector< size_t >& coords,
+                                            const std::vector< size_t >& dimBlocks ) {
+        size_t index = 0;
+        for( size_t i = 0; i < coords.size(); ++i ){
+            index += coords[ i ] * dimBlocks[ i ];
+        }
+        return index;
+    }
+
     /*! Compute index in the N-dim vector from given coordinates.
      * The coordinate 'i' is equal to index in the base 'i', divided by the base.
      * E.G. array dims: 8x3x3
@@ -351,14 +383,16 @@ protected:
      * 3. Index in the next base (Y): indY = 26 % 24 = 2.
      * Repeat. 
      *
-     * @param mg - the traverser object with already set dimensions and index.
+     * 2 versions - with precomputed block sizes and with dynamically computed.
+     * @param dimensions - dimensions of a matrix.
+     * @param dimBlocks - block sizes of each dimension. 
      */ 
-    static std::vector< size_t > getCoordsFromIndex( size_t ind, 
-            const std::vector< size_t >& dimensions )
+    static std::vector< size_t > getCoordsFromIndexDimensions( size_t ind, 
+                                const std::vector< size_t >& dimensions )
     {
         std::vector< size_t > coords( dimensions.size() );
 
-        for( size_t i = coords.size() - 1; i >= 0; i-- ){
+        for( size_t i = coords.size() - 1; i < coords.size(); i-- ){
             // Compute the base of coordinate i.
             size_t base = 1;
             for( size_t j = 0; j < i; j++ ){
@@ -374,6 +408,22 @@ protected:
         return coords;
     }
 
+    static std::vector< size_t > getCoordsFromIndexBlocks( size_t ind, 
+                                const std::vector< size_t >& dimBlocks )
+    {
+        std::vector< size_t > coords( dimBlocks.size() );
+
+        for( size_t i = coords.size() - 1; i < coords.size(); i-- ){
+            // Compute the base of coordinate i - the block size of c. i.
+            size_t base = dimBlocks[ i ];
+            
+            // Compute coords and index in the next base.            
+            coords[ i ] = (ind / base);
+            ind = ind % base;
+        }
+        return coords;
+    }
+
     /*! More optimized and "checked" non-static index getter.
      *  - Calculates the index from current coords, while at the same time, checking
      *    if it's valid.
@@ -384,21 +434,15 @@ protected:
     bool getIndexFromCoords_Checked( const std::vector< size_t >& _coords, 
                                      size_t& index ) const {
         index = 0;
-        for( size_t i = _coords.size() - 1; i < _coords.size(); i-- ){
+        for( size_t i = 0; i < _coords.size(); ++i ){
             // Check for this axis's coord's validity (is in bounds).
             if( _coords[ i ] < m->offset[ i ] || _coords[ i ] > m->endOffset[ i ] )
-                return false;
+                return false; 
 
-            // Calculate the i'th block to be added.
-            size_t tmp = 1;
-            for( size_t j = 0; j < i; j++ ){
-                tmp *= m->dimensions[ j ];
-            }
-            tmp *= _coords[ i ]; 
-            index += tmp;
+            // Add this dimension's block to index.
+            index += _coords[ i ] * m->dimBlocks[ i ];
         }
-        // Success. Index is valid!
-        return true;
+        return true; 
     }
 
     /*! Child Traverser Spawning constructor.
@@ -414,7 +458,7 @@ protected:
     MatrixGraphTraverser( const MatrixGraphTraverser< Element, NeighborGetter >& parent,
                           const std::vector<size_t>& _coords, bool check = false )
         : m( parent.m ), coords( std::move( _coords ) ), 
-          index( getIndexFromCoords( coords, m->dimensions ) )
+          index( getIndexFromCoordsBlocks( coords, m->dimBlocks ) )
     { 
         if( check )
             checkCoordValidity( coords, m->offset, m->endOffset );
@@ -441,7 +485,7 @@ public:
            ),   
           coords( _coords.empty() ? std::vector<size_t>( m->dimensions.size(), 0 ) : 
                                     std::move( _coords ) ), 
-          index( getIndexFromCoords( coords, m->dimensions ) )
+          index( getIndexFromCoordsBlocks( coords, m->dimBlocks ) )
     { 
         // Check the validity of all properties to avoid errors later.
         checkValidityFull(); 
@@ -511,7 +555,7 @@ public:
         }
 
         // Compute index for actual element access from a matrix buffer.
-        index = getIndexFromCoords( coords, m->dimensions );
+        index = getIndexFromCoordsBlocks( coords, m->dimBlocks );
 
         return advanced;
     }
@@ -547,7 +591,7 @@ public:
                 } 
                 // However if available region is contiguous, we can only check
                 // the indexed of the start and end of the region.
-                size_t indx = getIndexFromCoords( neigh, this->m->dimensions );
+                size_t indx = getIndexFromCoordsBlocks( neigh, this->m->dimBlocks );
                 if( this->m->offsetIndex <= indx && indx <= this->m->endOffsetIndex ){
                     vec.push_back( this->m->matrix[ indx ] );
                 }
@@ -557,7 +601,7 @@ public:
 
             // Coords were already checked. We're sure index is in matrix's memscope.
             // If not, that's neighGetter's fault.
-            size_t indx = getIndexFromCoords( neigh, this->m->dimensions );
+            size_t indx = getIndexFromCoordsBlocks( neigh, this->m->dimBlocks );
             vec.push_back( this->m->matrix[ indx ] ); 
         } );
     }
@@ -573,8 +617,8 @@ public:
 
     /*! Gets traversers pointing to neighbors.
      *  - We're using Child Spawn constructor - we use the same region context as current
-     *    (same 'm' pointer), but we change the coordinates we're pointing to - in this case,
-     *    to a neighbor.
+     *    (same 'm' pointer), but we change the coordinates we're pointing to - in this
+     *    case, to a neighbor.
      */ 
     void getNeighborTraversers( 
             std::vector< MatrixGraphTraverser< Element, NeighborGetter > >& vec ) const 
@@ -590,14 +634,14 @@ public:
                 }
                 // Check only the indexes of the start and end of the region if contiguous.
                 else { 
-                    indx = getIndexFromCoords( neigh, this->m->dimensions );
+                    indx = getIndexFromCoordsBlocks( neigh, this->m->dimBlocks );
                     if( indx < this->m->offsetIndex || indx > this->m->endOffsetIndex )
                         return;
                 }
             }
             // Coords were already checked in the neigh.getter.
             else{
-                indx = getIndexFromCoords( neigh, this->m->dimensions );
+                indx = getIndexFromCoordsBlocks( neigh, this->m->dimBlocks );
             }
             // At this point we're sure index is in matrix's memscope.
             // Copy current traverser's context, and only change the coords and index.
