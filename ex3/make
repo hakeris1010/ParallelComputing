@@ -1,7 +1,11 @@
 #!/bin/bash
-g++ --std=c++14 -c -g -O0 -fno-inline-functions main.cpp -o main.o
-g++ --std=c++14 -c -g -O0 -fno-inline-functions \
-    test_MatrixGraphTraverser.cpp -o test_MatrixGraphTraverser.o
-g++ -o bin/ex3 main.o test_MatrixGraphTraverser.o -lpthread
+
+CFLAGS="--std=c++14 -g -O0 -fno-inline-functions"
+
+g++ $CFLAGS -c main.cpp -o main.o
+g++ $CFLAGS -c benchmarks.cpp -o benchmarks.o
+g++ $CFLAGS -c test_MatrixGraphTraverser.cpp -o test_MatrixGraphTraverser.o
+
+g++ -o bin/ex3 main.o test_MatrixGraphTraverser.o benchmarks.o -lpthread
 
 
