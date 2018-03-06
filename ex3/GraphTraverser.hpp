@@ -1,6 +1,8 @@
 #ifndef GRAPH_TRAVERSER_HPP_INCLUDED
 #define GRAPH_TRAVERSER_HPP_INCLUDED
 
+namespace gtools{
+
 /*! A Cross-Interface for a Graph Traversing utility implementations.
  *  - Genericizes features such as current element getting, neighbor element getting,
  *    advancing to a specified neighbor or direction.
@@ -19,6 +21,8 @@ public:
     virtual bool advance( const size_t direction ) = 0;
     virtual void moveToNeighbor( const size_t neighborIndex ) = 0;
 };
+
+}
 
 #endif // GRAPH_TRAVERSER_HPP_INCLUDED 
 
