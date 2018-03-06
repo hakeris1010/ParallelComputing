@@ -550,7 +550,10 @@ public:
         // Move to the beginning of this direction, if space left,
         // if not, reset current coordinate to zero, and move to the next direction.
         bool advanced = false;
-        for( size_t i = direction; i < coords.size(); i++ ){
+        for( size_t i = direction, totalInd = 0; 
+             totalInd < coords.size();
+             i = (i + 1) % coords.size(), ++totalInd )
+        {
             if( coords[ i ] < m->endOffset[ i ] ){
                 coords[ i ]++;
                 advanced = true;
@@ -973,6 +976,8 @@ struct TestCase_MatrixGraphTraverser{
     std::vector< T > subRegionElements;
     bool contiguous;
 
+    bool moveToNeighbor = false;
+    std::vector< size_t > advanceDirections; 
     std::string name;
 
     TestCase_MatrixGraphTraverser( 
@@ -1064,12 +1069,20 @@ public:
             if( testCase.contiguous )
                 assert( trav.getIndex() == i );
 
-            // If not last, advance must be successful
-            if( i < regionExpected.size() - 1 )
-                assert( trav.advance() );
-            // If at the last element, advance must return false.
-            else
-                assert( !trav.advance() );
+            // Make advancement according to test case's properties.
+            if( testCase.moveToNeighbor && i < testCase.advanceDirections.size() ){
+                trav.moveToNeighbor( testCase.advanceDirections[ i ] );
+            }
+            else{
+                size_t direc = ( i < testCase.advanceDirections.size() ? 
+                                     testCase.advanceDirections[ i ] : 0 );
+                // If not last, advance must be successful
+                if( i < regionExpected.size() - 1 )
+                    assert( trav.advance( direc ) );
+                // If at the last element, advance must return false.
+                else
+                    assert( !trav.advance( direc ) );
+            }
         }
     }
 
@@ -1125,6 +1138,30 @@ void testTraverser(){
 
     testCases.push_back( std::move( tmp ) );
     }
+    {
+    TestCase_MatrixGraphTraverser<std::string> tmp(tDatas[0], false,
+                                    "Mid-Region 2D, Move on Y-axis.");
+    tmp.startCoords = { 1, 1 };
+    tmp.offset = { 1, 1 };
+    tmp.endOffset = { 3, 3 };
+    tmp.subRegionElements = { "7", "12", "17", "8", "13", "18", "9", "14", "19" };
+    tmp.advanceDirections = std::vector<size_t>( tmp.subRegionElements.size(), 1 ); 
+
+    testCases.push_back( std::move( tmp ) );
+    }
+    {
+    TestCase_MatrixGraphTraverser<std::string> tmp(tDatas[0], false,
+                                    "Mid-Region 2D, Move to East-South Neighbors.");
+    tmp.startCoords = { 1, 1 };
+    tmp.offset = { 1, 1 };
+    tmp.endOffset = { 3, 3 };
+    tmp.subRegionElements = { "7", "12", "17", "18", "13", "8", "9", "14", "19" };
+    tmp.moveToNeighbor = true;
+    tmp.advanceDirections = { 1, 1, 0, 2, 3, 0, 1, 1 };
+
+    testCases.push_back( std::move( tmp ) );
+    } 
+    
     // 3D cases
     testCases.push_back( TestCase_MatrixGraphTraverser<std::string>( tDatas[1], true, 
                          "Contiguous 3D Rubik's Cube" ) );
