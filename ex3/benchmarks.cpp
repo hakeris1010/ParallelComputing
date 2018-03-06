@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <vector>
+#include <mutex>
 #include "execution_time.hpp"
 
 namespace bench{
@@ -51,15 +52,51 @@ void runDimBenches(){
     size_t wid = 10;
     size_t hei = 20;
 
-    std::cout<< "foo() took "<< gtools::functionExecTime( 
+    std::cout<< "OneDimVector took "<< gtools::functionExecTime( 
         oneDimVector, wid, hei, reps ).count() <<" s\n";
-    std::cout<< "foo2() took "<< gtools::functionExecTime( 
-        twoDimVector, wid, hei, reps ).count() <<" s\n";
+    std::cout<< "TwoDimVector took "<< gtools::functionExecTime( 
+        twoDimVector, wid, hei, reps ).count() <<" s\n\n";
+}
+
+// Benchmarks for creating mutexes.
+void createMutex( size_t times ){
+    for( size_t i = 0; i < times; i++ ){
+        std::mutex mut;
+        std::mutex* m = new std::mutex();
+        delete m;
+    }
+}
+
+template< size_t size >
+struct ObjectWithSize{
+    char mc[ size ];
+};
+
+void createSimpleObjectSizeofMutex( size_t times ){
+    for( size_t i = 0; i < times; i++ ){
+        // On Stack
+        ObjectWithSize< sizeof(std::mutex) > ob;
+
+        // On Heap
+        ObjectWithSize< sizeof(std::mutex) >* mob = new ObjectWithSize< sizeof(std::mutex) >();
+        delete mob;
+    }
+}
+
+void benchMutex(){
+    size_t times = 1000000;
+
+    std::cout<< "Size of std::mutex : " << sizeof( std::mutex ) <<"\n";
+    std::cout<< "Mutex creation "<< times <<" times took "<< gtools::functionExecTime( 
+        createMutex, times ).count() <<" s\n";
+    std::cout<< "Simple object creation "<< times <<" times took "<< gtools::functionExecTime( 
+        createSimpleObjectSizeofMutex, times ).count() <<" s\n"; 
 }
 
 // Launches all benchmarks.
 void launchAllBenchmarks(){
     runDimBenches();
+    benchMutex();
 }
 
 }

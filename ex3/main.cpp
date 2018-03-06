@@ -1,3 +1,72 @@
+/********************************************
+ * Connected Component Labeling utility.    * 
+ * Version v0.1pre                          *
+ *                                          *
+ ********************************************/ 
+
+/*! Algorithm summary.
+ * - TODO: NOTE: The whole summary is VERY PRELIMINARY. No actual work has been done yet!
+ *
+ * - Program uses greatly modified Two-Pass component labeling algorithm, 
+ *   redesigned to support parallelization.
+ *
+ * ================================================
+ *
+ * A Simplified sequence of steps:
+ *
+ * 1. The LabeledNode matrix is initialized from the image matrix.
+ *
+ * 2. A number of labeler threads are assigned to corresponding square regions in 
+ *    the matrix, and start the First Pass on it.
+ *    - The region sizes are determined by the optimal relation between the size of
+ *      the problem and thread count (yet to be determined).
+ *  
+ *    2.1. First pass is modified to take Threshold into account. Individual label
+ *         values aren't stored in each node. Instead, each node of the region stores a
+ *         reference to the Original Node of the region, which stores the label of the
+ *         region.
+ *    2.3. So, if equality between regions is encountered, only the Original Node's label
+ *         needs to be changed, eliminating the need of additional equality containers.
+ *
+ *       - However minimal equality containers would be needed in case of equalities 
+ *         between the regions. However investigation is needed there.
+ *
+ * 3. When labeler thread completes the First pass on a square, it notifies the 
+ *    Control thread that region is labeled.
+ *    The Control thread waits until 2 neighboring regions are labeled, then runs
+ *    Equality Checker thread on the neighboring regions border.
+ *    When 4 neighboring regions are complete, the corner case is being examined.
+ *  
+ *  - These threads are optional though, it's possible to run those border-checks at the 
+ *    very end, when all labelers complete. There more investigation is needed.
+ *
+ * In summary, if maximum parameters are specified, there would be these threads working:
+ * 1. N labeler threads.
+ *    - Are launched by the control thread, to label their corresponding regions.
+ *
+ * 2. Control Thread (usually main initial thread):
+ *    2.1. Launches labeler threads on every region to be parallely labeled.
+ *    2.2. Launches the Equality Checker thread. It's suspended at the beginning.
+ *    2.2. After launching 'em, waits until some neighboring regions' labeling is completed.
+ *       - If so, notifies Equality Checker thread to check for equal labels in the border
+ *         and assign same label to them.
+ *
+ * 3. Equality Checker thread.
+ *    - Checks for equalities on borders between regions and fixes them.
+ *    - Wakes up when notified by the Control Thread.
+ *    - Can be implemented by inner labeling algorithm which runs on a region specified.
+ *
+ * ================================================
+ *
+ * The Labeling Algorithm:
+ * - TODO: More investigation needed.
+ * - Is a version of Two-Pass algorithm modified to be flexible.  
+ * - Algorithm can process N-dimensional matrices - the algotithm is based upon
+ *   gtools::MatrixGraphTraverser - the traverser which interfaces every matrix to a
+ *   graph-like structure.
+ */ 
+
+
 #include <iostream>
 #include <vector>
 #include <atomic>
@@ -8,7 +77,6 @@
 #include <cassert>
 #include <unordered_set>
 #include "MatrixGraphTraverser.hpp"
-
 
 // Structure used on our project.
 struct Pixel{
@@ -65,7 +133,6 @@ public:
     LabeledNode<Data>* regionsFirstNode = nullptr;
 
     volatile bool isReady = true;
-    //std::condition_variable var;
 
     // Copy and move constructors.
     LabeledNode( const Data& _data, long _label = 0, LabeledNode<Data>* firstNode = nullptr )
@@ -170,41 +237,6 @@ void labelStructure( ConnectedComponentLabeler& globalData,
     }
 }
 */
-
-
-/*void oneDimVector( std::vector<size_t> dimensions, size_t repeats ){
-    // Set size of the matrix vector and coordinates of the element to be
-    // accessed each time.
-    size_t size = 1;
-    std::vector<size_t> coords( dimensions.size() );
-
-    for( size_t i = 0; i < dimensions.size(); i++ ){
-        size *= dimensions[i];
-
-        // We'll be accessing the central element.
-        coords[i] = dimensions[i] / 2;
-    }
-
-    // N-dimensional matrix vector.
-    std::vector<int> vect( size, 5 );
-
-    // Access the element in N-dim vector.
-    // Example 3D coordinates:
-    // (x,y,z) = (1, 2, 3). 
-    // - (Counting from 0).
-    //
-    // coord = X*Y*(z) + X*(y) + x;
-    // - X, Y and Z are the dimensions of a hypercube.
-    //
-    for( size_t i = 0; i < repeats; i++ ){
-        size_t index = 1;
-        for( size_t i = 0; i < dimensions.size(); i++ ){
-            index = coords[i]* 
-        }
-    }
-} */
-
-
 
 namespace gtools{ extern void testTraverser(); }
 namespace bench{ extern void launchAllBenchmarks(); }
